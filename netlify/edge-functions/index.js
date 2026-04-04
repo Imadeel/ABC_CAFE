@@ -25,6 +25,8 @@ export default async (request, context) => {
     const isToday = day.date === todayStr;
     const byShift = {};
     for (const s of day.slots) {
+      const mins = s.time.split(":")[1];
+      if (mins !== "00" && mins !== "30") continue;
       const shift = s.shift || "Available";
       if (!byShift[shift]) byShift[shift] = [];
       byShift[shift].push(s.time);
@@ -95,7 +97,7 @@ body{font-family:'Inter',sans-serif;font-weight:400;background:#f8f7f5;color:#1a
 .section-label{font-size:10px;font-weight:500;color:#9a9a9a;text-transform:uppercase;letter-spacing:.08em;margin-bottom:.85rem}
 
 .day-block{margin-bottom:1.5rem}
-.day-name-row{display:flex;align-items:center;gap:6px;margin-bottom:7px}
+.day-name-row{display:flex;align-items:center;gap:6px}
 .day-name{font-size:13px;font-weight:500;color:#1a1a1a}
 .today-pill{font-size:9px;padding:2px 7px;font-weight:500;background:#e8f0fe;color:#1a56db;border-radius:999px}
 .shift-row{margin-bottom:8px}
@@ -168,6 +170,17 @@ body{font-family:'Inter',sans-serif;font-weight:400;background:#f8f7f5;color:#1a
 
 .ssr-note{display:inline-flex;align-items:center;gap:5px;font-size:10px;color:#9a9a9a;margin-bottom:1rem}
 .ssr-note-dot{width:5px;height:5px;border-radius:50%;background:#4caf7a}
+.day-header{display:flex;align-items:center;justify-content:space-between;cursor:pointer;padding:8px 0;user-select:none}
+.day-header:hover .day-name{color:#555}
+.day-right{display:flex;align-items:center;gap:8px}
+.slot-count{font-size:11px;color:#9a9a9a}
+.chevron{font-size:11px;color:#aaa;transition:transform .2s}
+.day-block.open .chevron{transform:rotate(180deg)}
+.day-slots{display:none;padding-bottom:4px}
+.day-block.open .day-slots{display:block}
+.day-block{border-bottom:1px solid #f0f0f0;margin-bottom:0;padding:0}
+.day-block:last-child{border-bottom:none}
+.day-block.open{margin-bottom:8px}
 
 .divider{height:1px;background:#ececec;margin:1.5rem 0}
 .footer{text-align:center}
@@ -312,6 +325,11 @@ body{font-family:'Inter',sans-serif;font-weight:400;background:#f8f7f5;color:#1a
 let sel={time:null,day:null,date:null,guests:null};
 let activeBtn=null,chatOpen=false;
 
+function toggleDay(id){
+  const el=document.getElementById(id);
+  el.classList.toggle('open');
+}
+
 function selectSlot(time,day,date,btn){
   if(activeBtn)activeBtn.classList.remove('selected');
   btn.classList.add('selected');activeBtn=btn;
@@ -405,20 +423,20 @@ function getBot(msg){
 function addUser(t){
   const c=document.getElementById('chat-msgs');
   document.getElementById('qrs').style.display='none';
-  c.innerHTML+=\`<div class="msg user"><div class="av usr">U</div><div class="bubble">\${t}</div></div>\`;
+  c.innerHTML+='<div class="msg user"><div class="av usr">U</div><div class="bubble">'+t+'</div></div>';
   c.scrollTop=c.scrollHeight;
 }
 
 function addTyping(){
   const c=document.getElementById('chat-msgs');
-  c.innerHTML+=\`<div class="msg bot" id="ty"><div class="av bot">M</div><div class="bubble"><div class="typing"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div></div></div>\`;
+  c.innerHTML+='<div class="msg bot" id="ty"><div class="av bot">M</div><div class="bubble"><div class="typing"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div></div></div>';
   c.scrollTop=c.scrollHeight;
 }
 
 function botSay(t){
   const ty=document.getElementById('ty');if(ty)ty.remove();
   const c=document.getElementById('chat-msgs');
-  c.innerHTML+=\`<div class="msg bot"><div class="av bot">M</div><div class="bubble">\${t}</div></div>\`;
+  c.innerHTML+='<div class="msg bot"><div class="av bot">M</div><div class="bubble">'+t+'</div></div>';
   c.scrollTop=c.scrollHeight;
 }
 
