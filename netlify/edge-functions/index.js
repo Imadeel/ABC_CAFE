@@ -1,7 +1,6 @@
 export default async (request, context) => {
   const SLUG = "medusa-italian-osteria-romana";
   const API  = `https://mcp.getfork.ai/api/availability/${SLUG}.json`;
-  const BOOK = `https://mcp.getfork.ai/book/${SLUG}`;
 
   let weekSlots = [];
   let fetchError = "";
@@ -21,8 +20,8 @@ export default async (request, context) => {
 
   const todayStr = new Date().toISOString().slice(0, 10);
 
-  // SSR plain HTML slots — for AI crawlers
-  const ssrSlots = weekSlots.map(day => {
+  // Build SSR slots HTML — AI reads this, humans interact with it
+  const slotsHTML = weekSlots.map(day => {
     const isToday = day.date === todayStr;
     const byShift = {};
     for (const s of day.slots) {
@@ -30,30 +29,23 @@ export default async (request, context) => {
       if (!byShift[shift]) byShift[shift] = [];
       byShift[shift].push(s.time);
     }
-    const shiftsHTML = Object.entries(byShift).map(([shift, times]) =>
-      `<div class="s-shift"><span class="s-shift-name">${shift}</span><div class="s-pills">${times.map(t => `<span class="s-pill" data-time="${t}" data-day="${day.dayName}" data-date="${day.date}">${t}</span>`).join("")}</div></div>`
-    ).join("");
-    return `<div class="s-day${isToday ? " s-today" : ""}" data-date="${day.date}" aria-label="${day.dayName} ${day.date}">
-      <div class="s-day-header" onclick="toggleDay(this)">
-        <span class="s-day-name">${day.dayName}${isToday ? ' <em class="s-today-badge">Today</em>' : ""}</span>
-        <span class="s-day-meta"><span class="s-slot-count">${day.slots.length} slots</span><span class="s-chevron">▾</span></span>
+    const shiftsHTML = Object.entries(byShift).map(([shift, times]) => `
+      <div class="shift-row">
+        <div class="shift-name">${shift}</div>
+        <div class="pills">${times.map(t =>
+          `<button class="pill" onclick="selectSlot('${t}','${day.dayName}','${day.date}',this)">${t}</button>`
+        ).join("")}</div>
+      </div>`).join("");
+
+    return `
+    <div class="day-block" data-date="${day.date}" aria-label="${day.dayName} ${day.date}">
+      <div class="day-name-row">
+        <span class="day-name">${day.dayName}</span>
+        ${isToday ? '<span class="today-pill">Today</span>' : ""}
       </div>
-      <div class="s-slots-body">${shiftsHTML}</div>
+      ${shiftsHTML}
     </div>`;
   }).join("");
-
-  // JS data for interactive UI
-  const jsData = JSON.stringify(weekSlots.map(d => ({
-    date: d.date,
-    dayName: d.dayName,
-    isToday: d.date === todayStr,
-    shifts: d.slots.reduce((acc, s) => {
-      const k = s.shift || "Available";
-      if (!acc[k]) acc[k] = [];
-      acc[k].push(s.time);
-      return acc;
-    }, {})
-  })));
 
   const jsonLD = JSON.stringify({
     "@context": "https://schema.org",
@@ -79,287 +71,370 @@ export default async (request, context) => {
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>Medusa Osteria Romana — Reservations</title>
-<meta name="description" content="Book a table at Medusa Osteria Romana, Fortitude Valley Brisbane. Live availability, instant confirmation."/>
+<meta name="description" content="Book a table at Medusa Osteria Romana, Fortitude Valley Brisbane. Live availability updated every 60 seconds."/>
 <meta name="robots" content="index,follow"/>
-<script type="application/ld+json">${jsonLD}</script>
+<script type="application/ld+json">${jsonLD}<\/script>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
-<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=Montserrat:wght@300;400;500&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&display=swap" rel="stylesheet"/>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{
-  --bg:#0b0906;--bg2:#130f0b;--surface:#1c1711;--border:#2d2620;
-  --gold:#c8a96e;--gold-dim:#8a6f3f;--cream:#f0e8d8;--muted:#6b6055;
-  --text:#e8ddd0;--green:#4caf7a;--red:#c97c7c;
-}
 html{scroll-behavior:smooth}
-body{background:var(--bg);color:var(--text);font-family:'Montserrat',sans-serif;font-weight:300;line-height:1.7;min-height:100vh}
+body{font-family:'Inter',sans-serif;font-weight:400;background:#f8f7f5;color:#1a1a1a;min-height:100vh}
 
-/* HERO */
-.hero{text-align:center;padding:3rem 2rem 2rem;border-bottom:1px solid var(--border);background:radial-gradient(ellipse 80% 50% at 50% 0%,#2a1a0a33 0%,transparent 70%)}
-.snake{font-size:2.5rem;display:block;margin-bottom:1rem;animation:float 4s ease-in-out infinite}
-@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
-h1{font-family:'Cormorant Garamond',serif;font-size:clamp(2rem,6vw,3.5rem);font-weight:300;color:var(--cream);line-height:1.05;margin-bottom:.4rem}
-h1 em{font-style:italic;color:var(--gold)}
-.hero-sub{font-size:.72rem;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:1.5rem}
-.badges{display:flex;gap:.5rem;flex-wrap:wrap;justify-content:center;margin-bottom:2rem}
-.badge{border:1px solid var(--gold-dim);color:var(--gold);font-size:.65rem;letter-spacing:.1em;text-transform:uppercase;padding:.3rem .8rem;border-radius:2px}
-.ssr-tag{display:inline-flex;align-items:center;gap:.35rem;background:#0f1f0f;border:1px solid #2a4a2a;color:var(--green);font-size:.65rem;letter-spacing:.08em;padding:.25rem .6rem;border-radius:2px}
+.page{max-width:560px;margin:0 auto;padding:2rem 1.25rem 6rem}
 
-/* TABS */
-.tabs{display:flex;border-bottom:1px solid var(--border);background:var(--bg2)}
-.tab{flex:1;padding:.9rem;font-family:'Montserrat',sans-serif;font-size:.72rem;font-weight:500;letter-spacing:.12em;text-transform:uppercase;background:transparent;border:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;transition:all .15s}
-.tab.active{color:var(--gold);border-bottom:2px solid var(--gold)}
+.resto-header{margin-bottom:2rem}
+.resto-name{font-size:20px;font-weight:500;margin-bottom:5px}
+.resto-meta{font-size:12px;color:#6b6b6b;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.rating{color:#b8860b;font-weight:500}
+.sep{color:#ccc}
+.live-pill{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:500;padding:2px 8px;background:#edfaf3;color:#1a7a47;border-radius:999px}
+.live-dot{width:5px;height:5px;border-radius:50%;background:currentColor;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 
-/* PANELS */
-.panel{display:none;padding:2rem;max-width:740px;margin:0 auto}
-.panel.active{display:block}
+.section-label{font-size:10px;font-weight:500;color:#9a9a9a;text-transform:uppercase;letter-spacing:.08em;margin-bottom:.85rem}
 
-/* SSR AVAILABILITY — AI reads this */
-.s-week-label{font-size:.65rem;letter-spacing:.25em;text-transform:uppercase;color:var(--muted);margin-bottom:1.25rem}
-.s-day{border:1px solid var(--border);border-radius:6px;margin-bottom:.75rem;overflow:hidden}
-.s-day.s-today{border-color:var(--gold-dim)}
-.s-day-header{display:flex;justify-content:space-between;align-items:center;padding:.85rem 1.1rem;background:var(--surface);cursor:pointer;user-select:none}
-.s-day-name{font-family:'Cormorant Garamond',serif;font-size:1.1rem;color:var(--gold)}
-.s-today-badge{font-family:'Montserrat',sans-serif;font-size:.6rem;letter-spacing:.1em;text-transform:uppercase;background:var(--gold-dim);color:var(--bg);padding:.15rem .5rem;border-radius:2px;margin-left:.5rem;font-style:normal}
-.s-day-meta{display:flex;align-items:center;gap:.75rem}
-.s-slot-count{font-size:.7rem;color:var(--muted)}
-.s-chevron{font-size:.75rem;color:var(--muted);transition:transform .2s}
-.s-day.open .s-chevron{transform:rotate(180deg)}
-.s-slots-body{display:none;padding:1rem 1.1rem;border-top:1px solid var(--border)}
-.s-day.open .s-slots-body{display:block}
-.s-shift{margin-bottom:.85rem}
-.s-shift:last-child{margin-bottom:0}
-.s-shift-name{display:block;font-size:.6rem;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:.5rem}
-.s-pills{display:flex;flex-wrap:wrap;gap:.4rem}
-.s-pill{font-size:.78rem;font-family:'Montserrat',sans-serif;background:transparent;border:1px solid var(--border);color:var(--text);padding:.3rem .65rem;border-radius:3px;cursor:pointer;transition:all .15s}
-.s-pill:hover{border-color:var(--gold-dim);color:var(--gold)}
-.s-pill.selected{background:var(--gold);color:var(--bg);border-color:var(--gold)}
+.day-block{margin-bottom:1.5rem}
+.day-name-row{display:flex;align-items:center;gap:6px;margin-bottom:7px}
+.day-name{font-size:13px;font-weight:500;color:#1a1a1a}
+.today-pill{font-size:9px;padding:2px 7px;font-weight:500;background:#e8f0fe;color:#1a56db;border-radius:999px}
+.shift-row{margin-bottom:8px}
+.shift-name{font-size:9px;color:#9a9a9a;text-transform:uppercase;letter-spacing:.07em;margin-bottom:5px}
+.pills{display:flex;flex-wrap:wrap;gap:5px}
+.pill{font-size:12px;padding:6px 13px;border:1px solid #e0e0e0;border-radius:8px;background:#fff;color:#1a1a1a;cursor:pointer;transition:all .12s;font-family:'Inter',sans-serif}
+.pill:hover{border-color:#999;background:#f5f5f5}
+.pill.selected{background:#1a1a1a;color:#fff;border-color:#1a1a1a}
 
-/* BOOKING BAR */
-.booking-bar{position:sticky;bottom:0;background:var(--bg2);border-top:1px solid var(--border);padding:1rem 2rem;display:flex;gap:1rem;align-items:center;z-index:10}
-.sel-info{flex:1}
-.sel-time{font-family:'Cormorant Garamond',serif;font-size:1.1rem;color:var(--gold)}
-.sel-day{font-size:.7rem;color:var(--muted);margin-top:.1rem}
-.book-btn{background:var(--gold);color:var(--bg);font-family:'Montserrat',sans-serif;font-size:.72rem;font-weight:500;letter-spacing:.12em;text-transform:uppercase;border:none;padding:.7rem 1.8rem;border-radius:2px;cursor:pointer;transition:opacity .15s}
-.book-btn:disabled{opacity:.35;cursor:not-allowed}
-.book-btn:not(:disabled):hover{opacity:.85}
+.panel{background:#fff;border:1px solid #e8e8e8;border-radius:16px;overflow:hidden;margin-top:1.5rem;display:none;animation:slideIn .2s ease}
+.panel.visible{display:block}
+@keyframes slideIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 
-/* CHAT */
-.chat-wrap{display:flex;flex-direction:column;height:520px;border:1px solid var(--border);border-radius:6px;overflow:hidden}
-.chat-msgs{flex:1;overflow-y:auto;padding:1.25rem;display:flex;flex-direction:column;gap:1rem;background:var(--bg)}
-.msg{display:flex;gap:.75rem}
+.panel-header{padding:.9rem 1.25rem;background:#fafafa;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;justify-content:space-between}
+.panel-title{font-size:13px;font-weight:500}
+.panel-sub{font-size:11px;color:#6b6b6b;margin-top:2px}
+.close-btn{font-size:16px;color:#aaa;cursor:pointer;background:none;border:none;padding:0 4px;line-height:1}
+.close-btn:hover{color:#1a1a1a}
+
+.panel-body{padding:1.25rem}
+
+.guests-row{display:flex;gap:6px;margin-bottom:1rem}
+.guest-opt{flex:1;padding:9px 4px;text-align:center;font-size:12px;font-weight:500;border:1px solid #e0e0e0;border-radius:8px;cursor:pointer;transition:all .12s;background:#fff;font-family:'Inter',sans-serif}
+.guest-opt:hover{border-color:#999}
+.guest-opt.selected{background:#1a1a1a;color:#fff;border-color:#1a1a1a}
+
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
+.form-group{margin-bottom:8px}
+.form-label{font-size:11px;font-weight:500;color:#6b6b6b;margin-bottom:4px;display:block}
+.form-input{width:100%;padding:9px 12px;font-size:13px;border:1px solid #e0e0e0;border-radius:8px;background:#fff;color:#1a1a1a;font-family:'Inter',sans-serif;outline:none;transition:border-color .12s}
+.form-input:focus{border-color:#1a1a1a}
+
+.confirm-btn{width:100%;padding:12px;font-size:13px;font-weight:500;background:#1a1a1a;color:#fff;border:none;border-radius:10px;cursor:pointer;margin-top:.85rem;font-family:'Inter',sans-serif;transition:opacity .12s}
+.confirm-btn:disabled{opacity:.3;cursor:not-allowed}
+.confirm-btn:not(:disabled):hover{opacity:.85}
+
+.chat-msgs{height:220px;overflow-y:auto;padding:1rem 1.25rem;display:flex;flex-direction:column;gap:10px;background:#fff}
+.msg{display:flex;gap:7px}
 .msg.user{flex-direction:row-reverse}
-.av{width:30px;height:30px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:500}
-.av.bot{background:var(--surface);color:var(--gold);border:1px solid var(--gold-dim)}
-.av.user{background:var(--gold);color:var(--bg)}
-.bubble{max-width:75%;padding:.6rem .9rem;border-radius:4px;font-size:.82rem;line-height:1.6}
-.msg.bot .bubble{background:var(--surface);border-radius:2px 6px 6px 6px}
-.msg.user .bubble{background:var(--gold-dim);color:var(--cream);border-radius:6px 2px 6px 6px}
-.qrs{display:flex;flex-wrap:wrap;gap:.5rem;padding:.75rem 1.25rem;background:var(--bg2);border-top:1px solid var(--border)}
-.qr{font-size:.7rem;padding:.35rem .85rem;border:1px solid var(--gold-dim);color:var(--gold);background:transparent;border-radius:2px;cursor:pointer;transition:all .15s}
-.qr:hover{background:var(--gold-dim);color:var(--bg)}
-.chat-input-row{display:flex;gap:.75rem;padding:.85rem 1.25rem;background:var(--bg2);border-top:1px solid var(--border)}
-.chat-input{flex:1;background:var(--surface);border:1px solid var(--border);color:var(--text);font-family:'Montserrat',sans-serif;font-size:.82rem;padding:.55rem .85rem;border-radius:3px;outline:none}
-.chat-input:focus{border-color:var(--gold-dim)}
-.chat-send{background:var(--gold);color:var(--bg);border:none;font-family:'Montserrat',sans-serif;font-size:.72rem;font-weight:500;letter-spacing:.1em;text-transform:uppercase;padding:.55rem 1.2rem;border-radius:3px;cursor:pointer}
-.typing{display:flex;gap:4px;align-items:center;padding:.5rem .9rem}
-.dot{width:5px;height:5px;border-radius:50%;background:var(--muted);animation:blink 1.2s infinite}
+.av{width:24px;height:24px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:500}
+.av.bot{background:#f0f0f0;color:#6b6b6b;border:1px solid #e8e8e8}
+.av.usr{background:#1a1a1a;color:#fff}
+.bubble{max-width:80%;padding:7px 11px;font-size:12px;line-height:1.5;border-radius:12px}
+.msg.bot .bubble{background:#f5f5f5;border-radius:3px 12px 12px 12px}
+.msg.user .bubble{background:#1a1a1a;color:#fff;border-radius:12px 3px 12px 12px}
+
+.qrs{display:flex;flex-wrap:wrap;gap:5px;padding:.6rem 1.25rem;border-top:1px solid #f0f0f0;background:#fff}
+.qr{font-size:11px;padding:4px 10px;border:1px solid #e0e0e0;border-radius:999px;background:transparent;color:#1a1a1a;cursor:pointer;transition:background .1s;font-family:'Inter',sans-serif}
+.qr:hover{background:#f5f5f5}
+
+.chat-input-row{display:flex;gap:7px;padding:.75rem 1.25rem;border-top:1px solid #f0f0f0;background:#fff}
+.chat-input{flex:1;padding:8px 13px;font-size:12px;border:1px solid #e0e0e0;border-radius:999px;background:#f8f8f8;color:#1a1a1a;font-family:'Inter',sans-serif;outline:none}
+.chat-input:focus{border-color:#999;background:#fff}
+.send-btn{width:32px;height:32px;border-radius:50%;background:#1a1a1a;color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0}
+
+.success-panel{background:#edfaf3;border:1px solid #b7e8cc;border-radius:16px;padding:2rem 1.5rem;text-align:center;margin-top:1.5rem;display:none;animation:slideIn .2s ease}
+.success-panel.visible{display:block}
+.success-icon{font-size:32px;margin-bottom:.6rem}
+.success-title{font-size:16px;font-weight:500;color:#1a5c38;margin-bottom:.4rem}
+.success-msg{font-size:12px;color:#1a7a47;line-height:1.6;margin-bottom:1rem;opacity:.9}
+.success-detail{border-top:1px solid #b7e8cc;padding-top:.75rem;display:flex;flex-direction:column;gap:4px}
+.success-row{display:flex;justify-content:space-between;font-size:12px}
+.success-key{color:#1a7a47;opacity:.7}
+.success-val{font-weight:500;color:#1a5c38}
+.new-btn{margin-top:1rem;padding:7px 18px;font-size:12px;font-weight:500;background:transparent;color:#1a7a47;border:1px solid #b7e8cc;border-radius:8px;cursor:pointer;font-family:'Inter',sans-serif}
+
+.chat-fab{position:fixed;bottom:1.5rem;right:1.5rem;display:flex;align-items:center;gap:7px;background:#1a1a1a;color:#fff;padding:10px 18px;border-radius:999px;cursor:pointer;border:none;font-family:'Inter',sans-serif;font-size:13px;font-weight:500;box-shadow:0 4px 16px rgba(0,0,0,.18);transition:opacity .15s;z-index:100}
+.chat-fab:hover{opacity:.85}
+.chat-fab-dot{width:7px;height:7px;border-radius:50%;background:#4caf7a;flex-shrink:0}
+
+.ssr-note{display:inline-flex;align-items:center;gap:5px;font-size:10px;color:#9a9a9a;margin-bottom:1rem}
+.ssr-note-dot{width:5px;height:5px;border-radius:50%;background:#4caf7a}
+
+.divider{height:1px;background:#ececec;margin:1.5rem 0}
+.footer{text-align:center}
+.footer-info{font-size:11px;color:#9a9a9a;line-height:2}
+.footer-info a{color:#9a9a9a;text-decoration:none}
+.powered{font-size:10px;color:#c0c0c0;margin-top:.5rem}
+
+.typing{display:flex;gap:3px;align-items:center}
+.dot{width:4px;height:4px;border-radius:50%;background:#999;animation:blink 1.2s infinite}
 .dot:nth-child(2){animation-delay:.2s}.dot:nth-child(3){animation-delay:.4s}
-@keyframes blink{0%,80%,100%{opacity:.3}40%{opacity:1}}
+@keyframes blink{0%,80%,100%{opacity:.25}40%{opacity:1}}
 
-/* FOOTER */
-footer{text-align:center;padding:2.5rem 2rem;border-top:1px solid var(--border);margin-top:2rem}
-.footer-name{font-family:'Cormorant Garamond',serif;font-size:1.2rem;color:var(--gold);margin-bottom:.4rem}
-.footer-details{font-size:.72rem;color:var(--muted);line-height:2}
-.footer-details a{color:var(--gold-dim);text-decoration:none}
-.powered{font-size:.6rem;color:#2a2520;margin-top:1rem}
-.powered a{color:#3a3530;text-decoration:none}
+.error-msg{background:#fff3f3;border:1px solid #ffc0c0;border-radius:10px;padding:1rem 1.25rem;font-size:13px;color:#c00;margin-bottom:1rem}
 
-@media(max-width:500px){
-  .panel{padding:1.25rem}
-  .booking-bar{padding:.85rem 1.25rem}
+@media(max-width:480px){
+  .page{padding:1.5rem 1rem 6rem}
+  .form-row{grid-template-columns:1fr}
+  .chat-fab{bottom:1rem;right:1rem;padding:9px 14px;font-size:12px}
 }
 </style>
 </head>
 <body>
 
-<div class="hero">
-  <span class="snake">🐍</span>
-  <h1>Medusa<br/><em>Osteria Romana</em></h1>
-  <p class="hero-sub">Fortitude Valley · Brisbane · Roman Italian</p>
-  <div class="badges">
-    <span class="badge">Roman Italian</span>
-    <span class="badge">4.7 ★ · 312 reviews</span>
-    <span class="badge">$$–$$$</span>
-    <span class="badge">Dine In</span>
+<div class="page">
+
+  <div class="resto-header">
+    <div class="resto-name">Medusa Osteria Romana</div>
+    <div class="resto-meta">
+      <span class="rating">4.7 ★</span>
+      <span class="sep">·</span>
+      <span>Roman Italian · Fortitude Valley, Brisbane</span>
+      <span class="sep">·</span>
+      <div class="live-pill"><div class="live-dot"></div> Live</div>
+    </div>
   </div>
-  <span class="ssr-tag">✓ Live availability · server-rendered · AI-readable</span>
-</div>
 
-<div class="tabs">
-  <button class="tab active" onclick="switchTab('avail')">Availability</button>
-  <button class="tab" onclick="switchTab('chat')">Chat &amp; Book</button>
-</div>
+  <div class="section-label">This week — tap a time to book</div>
 
-<!-- ══ AVAILABILITY — SSR baked for AI crawlers ══ -->
-<div id="avail-panel" class="panel active">
-  <p class="s-week-label">This week — live table availability</p>
+  <div class="ssr-note">
+    <div class="ssr-note-dot"></div>
+    Server-rendered · updated every 60s · AI-readable
+  </div>
 
-  <!--
-    ════════════════════════════════════════════
-    GETFORK LIVE AVAILABILITY — SERVER RENDERED
-    All slots below are pre-baked. No JavaScript
-    required to read this content.
-    ════════════════════════════════════════════
-  -->
-  ${ssrSlots || `<p style="color:var(--muted);font-size:.85rem">No availability data found.</p>`}
+  ${fetchError
+    ? `<div class="error-msg">⚠ Could not load live availability. Please call us on 07 3193 0200.</div>`
+    : slotsHTML || `<p style="color:#9a9a9a;font-size:13px">No availability found for this week.</p>`
+  }
 
-</div>
+  <!-- BOOKING PANEL -->
+  <div class="panel" id="booking-panel">
+    <div class="panel-header">
+      <div>
+        <div class="panel-title" id="b-title">Reserve a table</div>
+        <div class="panel-sub" id="b-sub">Complete your details below</div>
+      </div>
+      <button class="close-btn" onclick="closeBooking()">✕</button>
+    </div>
+    <div class="panel-body">
+      <div class="section-label" style="margin-bottom:.5rem">How many guests?</div>
+      <div class="guests-row">
+        <div class="guest-opt" onclick="pickG(1,this)">1</div>
+        <div class="guest-opt" onclick="pickG(2,this)">2</div>
+        <div class="guest-opt" onclick="pickG(3,this)">3</div>
+        <div class="guest-opt" onclick="pickG(4,this)">4+</div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Name</label>
+          <input class="form-input" id="inp-name" placeholder="Your name" oninput="chk()"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Phone</label>
+          <input class="form-input" id="inp-phone" placeholder="04XX XXX XXX" type="tel" oninput="chk()"/>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Special requests <span style="font-weight:400;color:#bbb">(optional)</span></label>
+        <input class="form-input" id="inp-notes" placeholder="Dietary needs, occasion, seating preference…"/>
+      </div>
+      <button class="confirm-btn" id="confirm-btn" disabled onclick="confirmBook()">Confirm reservation</button>
+    </div>
+  </div>
 
-<!-- ══ CHAT ══ -->
-<div id="chat-panel" class="panel">
-  <div class="chat-wrap">
+  <!-- CHAT PANEL -->
+  <div class="panel" id="chat-panel">
+    <div class="panel-header">
+      <div>
+        <div class="panel-title">Chat with us</div>
+        <div class="panel-sub">Ask anything about Medusa</div>
+      </div>
+      <button class="close-btn" onclick="closeChat()">✕</button>
+    </div>
     <div class="chat-msgs" id="chat-msgs">
       <div class="msg bot">
         <div class="av bot">M</div>
-        <div class="bubble">Ciao! I'm Medusa's booking assistant. I can check availability, answer questions, and help you reserve a table. What would you like?</div>
+        <div class="bubble">Hi! I can help with availability, dietary needs, parking, or anything else. What would you like to know?</div>
       </div>
     </div>
     <div class="qrs" id="qrs">
-      <button class="qr" onclick="sendQuick('Are you free tonight?')">Free tonight?</button>
-      <button class="qr" onclick="sendQuick('Table for 2 on Sunday')">Sunday table for 2</button>
-      <button class="qr" onclick="sendQuick('What time is last seating?')">Last seating?</button>
-      <button class="qr" onclick="sendQuick('Do you have outdoor seating?')">Outdoor seating?</button>
-      <button class="qr" onclick="sendQuick('Do you cater for dietary requirements?')">Dietary options?</button>
+      <button class="qr" onclick="sq('Free tonight?')">Tonight?</button>
+      <button class="qr" onclick="sq('Outdoor seating?')">Outdoor?</button>
+      <button class="qr" onclick="sq('Dietary options?')">Dietary?</button>
+      <button class="qr" onclick="sq('Where to park?')">Parking?</button>
+      <button class="qr" onclick="sq('Last seating time?')">Last seating?</button>
     </div>
     <div class="chat-input-row">
-      <input class="chat-input" id="chat-input" placeholder="Type anything…" onkeydown="if(event.key==='Enter')sendChat()"/>
-      <button class="chat-send" onclick="sendChat()">Send</button>
+      <input class="chat-input" id="chat-input" placeholder="Ask anything…" onkeydown="if(event.key==='Enter')sc()"/>
+      <button class="send-btn" onclick="sc()">↑</button>
     </div>
   </div>
+
+  <!-- SUCCESS -->
+  <div class="success-panel" id="success-panel">
+    <div class="success-icon">🎉</div>
+    <div class="success-title">You're booked!</div>
+    <div class="success-msg" id="success-msg"></div>
+    <div class="success-detail">
+      <div class="success-row"><span class="success-key">Date</span><span class="success-val" id="sc-date"></span></div>
+      <div class="success-row"><span class="success-key">Time</span><span class="success-val" id="sc-time"></span></div>
+      <div class="success-row"><span class="success-key">Guests</span><span class="success-val" id="sc-guests"></span></div>
+    </div>
+    <button class="new-btn" onclick="resetBooking()">Make another booking</button>
+  </div>
+
+  <div class="divider"></div>
+  <div class="footer">
+    <div class="footer-info">
+      14 Via Roma Lane, Fortitude Valley QLD 4006<br/>
+      <a href="tel:+61731930200">07 3193 0200</a> · Tables held 15 min · Walk-ins welcome
+    </div>
+    <div class="powered">Powered by <a href="https://getfork.ai" style="color:#c0c0c0">GetFork</a></div>
+  </div>
+
 </div>
 
-<!-- BOOKING BAR -->
-<div class="booking-bar">
-  <div class="sel-info">
-    <div class="sel-time" id="sel-time">No time selected</div>
-    <div class="sel-day" id="sel-day">Tap a slot above to reserve</div>
-  </div>
-  <button class="book-btn" id="book-btn" disabled onclick="confirmBook()">Reserve →</button>
-</div>
-
-<footer>
-  <div class="footer-name">Medusa Osteria Romana</div>
-  <div class="footer-details">
-    14 Via Roma Lane, Fortitude Valley QLD 4006<br/>
-    <a href="tel:+61731930200">07 3193 0200</a> · Walk-ins welcome · Tables held 15 min
-  </div>
-  <p class="powered">Powered by <a href="https://getfork.ai">GetFork Voice AI</a></p>
-</footer>
+<button class="chat-fab" id="chat-fab" onclick="toggleChat()">
+  <div class="chat-fab-dot"></div>
+  Need help?
+</button>
 
 <script>
-// Hydrate pills from SSR HTML — make them interactive
-const DATA = ${jsData};
-let sel = null;
+let sel={time:null,day:null,date:null,guests:null};
+let activeBtn=null,chatOpen=false;
 
-// Open today by default
-document.querySelectorAll('.s-day').forEach((el, i) => {
-  if (i === 0) el.classList.add('open');
-});
-
-// Make pills clickable
-document.querySelectorAll('.s-pill').forEach(pill => {
-  pill.addEventListener('click', () => {
-    document.querySelectorAll('.s-pill.selected').forEach(p => p.classList.remove('selected'));
-    pill.classList.add('selected');
-    sel = { time: pill.dataset.time, day: pill.dataset.day, date: pill.dataset.date };
-    document.getElementById('sel-time').textContent = sel.time;
-    document.getElementById('sel-day').textContent = sel.day + ' · ' + sel.date;
-    document.getElementById('book-btn').disabled = false;
-  });
-});
-
-function toggleDay(header) {
-  header.closest('.s-day').classList.toggle('open');
+function selectSlot(time,day,date,btn){
+  if(activeBtn)activeBtn.classList.remove('selected');
+  btn.classList.add('selected');activeBtn=btn;
+  sel={time,day,date,guests:null};
+  document.querySelectorAll('.guest-opt.selected').forEach(b=>b.classList.remove('selected'));
+  document.getElementById('inp-name').value='';
+  document.getElementById('inp-phone').value='';
+  document.getElementById('inp-notes').value='';
+  document.getElementById('confirm-btn').disabled=true;
+  document.getElementById('b-title').textContent=day+' · '+time;
+  document.getElementById('b-sub').textContent='Complete your details to confirm';
+  closeChat();
+  document.getElementById('success-panel').classList.remove('visible');
+  document.getElementById('booking-panel').classList.add('visible');
+  document.getElementById('booking-panel').scrollIntoView({behavior:'smooth',block:'nearest'});
 }
 
-function switchTab(tab) {
-  document.querySelectorAll('.tab').forEach((t, i) =>
-    t.classList.toggle('active', (i===0&&tab==='avail')||(i===1&&tab==='chat')));
-  document.getElementById('avail-panel').classList.toggle('active', tab==='avail');
-  document.getElementById('chat-panel').classList.toggle('active', tab==='chat');
+function closeBooking(){
+  document.getElementById('booking-panel').classList.remove('visible');
+  if(activeBtn){activeBtn.classList.remove('selected');activeBtn=null;}
 }
 
-function confirmBook() {
-  if (!sel) return;
-  switchTab('chat');
-  setTimeout(() => {
-    addUser('I\\'d like to book a table for ' + sel.time + ' on ' + sel.day);
-    setTimeout(() => botSay('Perfect! A table for ' + sel.time + ' on ' + sel.day + ' — how many guests, and what name should I put the reservation under?'), 900);
-  }, 200);
+function pickG(n,btn){
+  document.querySelectorAll('.guest-opt.selected').forEach(b=>b.classList.remove('selected'));
+  btn.classList.add('selected');sel.guests=n;chk();
 }
 
-const KB = {
-  'tonight':   () => 'Tonight we have dinner slots from 5:00pm to 9:30pm. Slots like 5:00, 5:30 and 6:00pm are still available. Shall I hold one?',
-  'sunday':    () => 'Sunday we have lunch from 12:00–2:30pm and dinner from 5:30–9:30pm. Any preference?',
-  'last seat': () => 'Last seating is 90 minutes before close — so tonight that\\'s 9:30pm.',
-  'outdoor':   () => 'We have a lovely courtyard! Mention it when booking and we\\'ll do our best to seat you outside.',
-  'parking':   () => 'Street parking on Via Roma Lane, and Brunswick St car park is a 2-minute walk.',
-  'menu':      () => 'Roman Italian — handmade pasta, wood-fired proteins, Lazio wine list. Vegetarian, vegan and gluten-free options available.',
-  'dietary':   () => 'Absolutely — we cater for vegetarian, vegan, gluten-free, halal and dairy-free. Just let us know when booking.',
-  'private':   () => 'Yes! Private dining for groups of 10+. Call us on 07 3193 0200 to arrange.',
-  'cancel':    () => 'To cancel or modify, call 07 3193 0200. Tables are held for 15 minutes past booking time.',
-  'book':      () => 'Happy to help! What date and time, and how many guests?',
-  'halal':     () => 'Yes, we have halal options. Just mention it when you book and our kitchen will take care of it.',
+function chk(){
+  const n=document.getElementById('inp-name').value.trim();
+  const p=document.getElementById('inp-phone').value.trim();
+  document.getElementById('confirm-btn').disabled=!(n&&p&&sel.guests);
+}
+
+function confirmBook(){
+  const name=document.getElementById('inp-name').value.trim();
+  const phone=document.getElementById('inp-phone').value.trim();
+  document.getElementById('sc-date').textContent=sel.day+' · '+sel.date;
+  document.getElementById('sc-time').textContent=sel.time;
+  document.getElementById('sc-guests').textContent=sel.guests+(sel.guests===1?' guest':' guests');
+  document.getElementById('success-msg').textContent='See you '+sel.day+' at '+sel.time+', '+name+'! We will send a reminder to '+phone+'.';
+  document.getElementById('booking-panel').classList.remove('visible');
+  document.getElementById('success-panel').classList.add('visible');
+  document.getElementById('success-panel').scrollIntoView({behavior:'smooth',block:'nearest'});
+  if(activeBtn){activeBtn.classList.remove('selected');activeBtn=null;}
+}
+
+function resetBooking(){
+  document.getElementById('success-panel').classList.remove('visible');
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+
+function toggleChat(){chatOpen?closeChat():openChat();}
+
+function openChat(){
+  closeBooking();
+  document.getElementById('chat-panel').classList.add('visible');
+  document.getElementById('chat-fab').innerHTML='<div class="chat-fab-dot"></div> Close chat';
+  document.getElementById('chat-panel').scrollIntoView({behavior:'smooth',block:'nearest'});
+  chatOpen=true;
+}
+
+function closeChat(){
+  document.getElementById('chat-panel').classList.remove('visible');
+  document.getElementById('chat-fab').innerHTML='<div class="chat-fab-dot"></div> Need help?';
+  chatOpen=false;
+}
+
+const KB={
+  'tonight':'Tonight we have dinner slots from 5:00pm to 9:30pm. Tap any time above to book!',
+  'outdoor':'Yes! We have a courtyard. Add it in special requests when booking.',
+  'dietary':'We cater for vegetarian, vegan, gluten-free, halal and dairy-free. Mention it when booking.',
+  'park':'Street parking on Via Roma Lane. Brunswick St car park is a 2 min walk.',
+  'last seat':'Last seating is 90 min before close — tonight that\'s 9:30pm.',
+  'menu':'Roman Italian — handmade pasta, wood-fired proteins, curated Lazio wine list.',
+  'private':'Private dining for groups of 10+. Call 07 3193 0200 to arrange.',
+  'cancel':'To cancel or modify, call 07 3193 0200. Tables held for 15 minutes.',
+  'halal':'Yes, halal options available. Just mention it when booking.',
+  'sunday':'Sunday has lunch 12:00–2:30pm and dinner 5:30–9:30pm.',
+  'gluten':'Yes, gluten-free options available. Please mention it when booking.',
+  'vegan':'Yes, we have vegan options. Please let us know when booking.',
 };
 
-function getReply(msg) {
-  const l = msg.toLowerCase();
-  for (const [k,fn] of Object.entries(KB)) { if (l.includes(k)) return fn(); }
-  if (l.match(/\\d{1,2}[:.]\\d{2}|dinner|lunch|table for|seat|reservation/)) {
-    return 'Got it! Can you confirm the date and number of guests so I can lock in the best available slot?';
-  }
-  return 'Thanks! For anything specific you can also call 07 3193 0200. I\\'m here to help with availability and bookings — what would you like to know?';
+function getBot(msg){
+  const l=msg.toLowerCase();
+  for(const[k,r]of Object.entries(KB))if(l.includes(k))return r;
+  if(l.match(/\d{1,2}[:]\d{2}|dinner|lunch|table|book|seat|reserv/))
+    return 'Happy to help! What date and how many guests are you thinking?';
+  return 'Great question! For anything specific you can also call us on 07 3193 0200.';
 }
 
-function addUser(text) {
-  const c = document.getElementById('chat-msgs');
-  c.innerHTML += '<div class="msg user"><div class="av user">U</div><div class="bubble">' + text + '</div></div>';
-  c.scrollTop = c.scrollHeight;
+function addUser(t){
+  const c=document.getElementById('chat-msgs');
+  document.getElementById('qrs').style.display='none';
+  c.innerHTML+=\`<div class="msg user"><div class="av usr">U</div><div class="bubble">\${t}</div></div>\`;
+  c.scrollTop=c.scrollHeight;
 }
 
-function addTyping() {
-  const c = document.getElementById('chat-msgs');
-  c.innerHTML += '<div class="msg bot" id="typing"><div class="av bot">M</div><div class="bubble"><div class="typing"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div></div></div>';
-  c.scrollTop = c.scrollHeight;
+function addTyping(){
+  const c=document.getElementById('chat-msgs');
+  c.innerHTML+=\`<div class="msg bot" id="ty"><div class="av bot">M</div><div class="bubble"><div class="typing"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div></div></div>\`;
+  c.scrollTop=c.scrollHeight;
 }
 
-function botSay(text) {
-  const t = document.getElementById('typing');
-  if (t) t.remove();
-  const c = document.getElementById('chat-msgs');
-  c.innerHTML += '<div class="msg bot"><div class="av bot">M</div><div class="bubble">' + text + '</div></div>';
-  c.scrollTop = c.scrollHeight;
+function botSay(t){
+  const ty=document.getElementById('ty');if(ty)ty.remove();
+  const c=document.getElementById('chat-msgs');
+  c.innerHTML+=\`<div class="msg bot"><div class="av bot">M</div><div class="bubble">\${t}</div></div>\`;
+  c.scrollTop=c.scrollHeight;
 }
 
-function sendChat() {
-  const inp = document.getElementById('chat-input');
-  const txt = inp.value.trim();
-  if (!txt) return;
-  inp.value = '';
-  document.getElementById('qrs').style.display = 'none';
-  addUser(txt);
-  addTyping();
-  setTimeout(() => botSay(getReply(txt)), 800 + Math.random() * 400);
+function sc(){
+  const inp=document.getElementById('chat-input');
+  const txt=inp.value.trim();if(!txt)return;
+  inp.value='';addUser(txt);addTyping();
+  setTimeout(()=>botSay(getBot(txt)),800+Math.random()*400);
 }
 
-function sendQuick(txt) {
-  document.getElementById('qrs').style.display = 'none';
-  addUser(txt);
-  addTyping();
-  setTimeout(() => botSay(getReply(txt)), 800 + Math.random() * 400);
+function sq(t){
+  document.getElementById('qrs').style.display='none';
+  addUser(t);addTyping();
+  setTimeout(()=>botSay(getBot(t)),800+Math.random()*400);
 }
-</script>
+<\/script>
 </body>
 </html>`;
 
