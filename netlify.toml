@@ -1,0 +1,10 @@
+# netlify.toml — drop this in the root of your Netlify site repo
+
+[build]
+  # Your existing build settings (adjust as needed)
+  publish = "."
+
+[[edge_functions]]
+  # Run the SSR availability function on every request to "/"
+  function = "availability"
+  path     = "/"

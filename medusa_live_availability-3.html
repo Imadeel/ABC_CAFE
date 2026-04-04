@@ -1,0 +1,335 @@
+
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;1,300;1,400&family=Josefin+Sans:wght@300;400;500&display=swap');
+
+  :root {
+    --bg: #FFFFFF; --surface: #F8F7F5; --border: #E8E3DC;
+    --ink: #1A1612; --body: #3D3630; --stone: #7A7068;
+    --muted: #B0A89E; --gold: #9A7730; --gold-lt: #C49A3C;
+    --gold-bg: #FBF6EE; --terra: #A84832;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Josefin Sans', sans-serif; background: var(--bg); color: var(--body); }
+
+  header {
+    border-bottom: 1px solid var(--border); padding: 14px 24px;
+    display: flex; align-items: center; gap: 14px;
+    background: #fff; position: sticky; top: 0; z-index: 100;
+    box-shadow: 0 1px 0 var(--border);
+  }
+  .h-emblem { font-size: 22px; }
+  .h-name { font-family: 'Cormorant Garamond', serif; font-size: 18px; font-weight: 300; letter-spacing: 0.05em; color: var(--ink); }
+  .h-sep { width: 1px; height: 18px; background: var(--border); }
+  .h-sub { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--stone); }
+  .h-live {
+    margin-left: auto; display: flex; align-items: center; gap: 7px;
+    font-size: 9px; letter-spacing: 0.15em; text-transform: uppercase;
+    color: var(--gold); border: 1px solid rgba(154,119,48,0.3); padding: 4px 10px;
+    background: var(--gold-bg);
+  }
+  .live-dot { width: 6px; height: 6px; border-radius: 50%; background: #4CAF50; animation: blink 1.8s infinite; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.25} }
+
+  main { max-width: 860px; margin: 0 auto; padding: 24px 20px 60px; }
+
+  .quick-facts {
+    display: grid; grid-template-columns: repeat(4,1fr);
+    border: 1px solid var(--border); margin-bottom: 28px; background: #fff;
+  }
+  .qf { padding: 12px 14px; border-right: 1px solid var(--border); }
+  .qf:last-child { border-right: none; }
+  .qf-label { font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+  .qf-val { font-size: 12px; color: var(--ink); }
+
+  .section-eyebrow {
+    font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase;
+    color: var(--stone); margin-bottom: 14px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .section-eyebrow::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+  .avail-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  #last-updated { font-size: 10px; color: var(--muted); letter-spacing: 0.05em; }
+  .refresh-btn {
+    font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--gold); background: var(--gold-bg); border: 1px solid rgba(154,119,48,0.3);
+    padding: 4px 12px; cursor: pointer; font-family: 'Josefin Sans', sans-serif;
+  }
+  .refresh-btn:hover { background: #f5ecd8; }
+
+  .avail-loading { border: 1px solid var(--border); background: var(--surface); padding: 40px 24px; text-align: center; }
+  .avail-spinner {
+    width: 28px; height: 28px; border-radius: 50%;
+    border: 2px solid var(--border); border-top-color: var(--gold);
+    animation: spin 0.9s linear infinite; margin: 0 auto 14px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .avail-loading-text { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--stone); }
+
+  .date-tabs { display: flex; overflow-x: auto; border-bottom: 1px solid var(--border); background: var(--surface); }
+  .date-tab {
+    padding: 9px 16px; font-size: 10px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--stone); cursor: pointer;
+    border: none; background: transparent; border-bottom: 2px solid transparent;
+    white-space: nowrap; transition: all 0.2s; font-family: 'Josefin Sans', sans-serif;
+  }
+  .date-tab:hover { color: var(--ink); background: rgba(0,0,0,0.02); }
+  .date-tab.active { color: var(--gold); border-bottom-color: var(--gold); background: #fff; }
+
+  .slot-panel { border: 1px solid var(--border); border-top: none; padding: 18px; display: none; background: #fff; }
+  .slot-panel.active { display: block; }
+
+  .shift-title {
+    font-size: 9px; letter-spacing: 0.15em; text-transform: uppercase;
+    color: var(--stone); margin-bottom: 10px; margin-top: 14px;
+  }
+  .shift-title:first-child { margin-top: 0; }
+
+  .slots-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px,1fr)); gap: 5px; }
+
+  .slot {
+    padding: 9px 10px; text-align: center;
+    border: 1px solid var(--border); transition: all 0.2s;
+    background: #fff; text-decoration: none; display: block;
+  }
+  .slot:hover { border-color: var(--gold); background: var(--gold-bg); }
+  .slot-full { background: var(--surface); cursor: default; }
+  .slot-time { font-size: 13px; color: var(--ink); letter-spacing: 0.03em; display: block; margin-bottom: 3px; }
+  .slot-covers { font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; display: block; }
+
+  .slot-green .slot-covers { color: #2e7d32; }
+  .slot-cool { border-color: rgba(41,128,185,0.3); background: #EBF5FB; }
+  .slot-cool .slot-covers { color: #1a6fa0; }
+  .slot-warm { border-color: rgba(230,126,34,0.4); background: #FEF9F0; }
+  .slot-warm .slot-covers { color: #d68910; }
+  .slot-hot { border-color: rgba(192,57,43,0.4); background: #FEF6F4; }
+  .slot-hot .slot-covers { color: #c0392b; }
+  .slot-full .slot-time { color: var(--muted); }
+  .slot-full .slot-covers { color: var(--muted); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--stone); letter-spacing: 0.05em; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .ld-hot  { background: #c0392b; }
+  .ld-warm { background: #d68910; }
+  .ld-cool { background: #1a6fa0; }
+  .ld-avail { background: #2e7d32; }
+  .ld-full { background: var(--muted); }
+
+  .book-bar {
+    border: 1px solid rgba(154,119,48,0.25); background: var(--gold-bg);
+    padding: 18px 20px; margin-top: 28px;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  }
+  .book-bar-text { font-size: 12px; color: var(--stone); line-height: 1.6; }
+  .book-bar-text strong { color: var(--ink); }
+  .book-btn {
+    background: var(--ink); color: #fff; padding: 11px 24px;
+    font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+    text-decoration: none; font-family: 'Josefin Sans', sans-serif;
+    white-space: nowrap; flex-shrink: 0; transition: background 0.2s;
+  }
+  .book-btn:hover { background: #2d2820; }
+
+  .hours-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--border); border: 1px solid var(--border); margin-bottom: 28px; }
+  .hours-row { background: #fff; padding: 10px 14px; display: flex; justify-content: space-between; font-size: 12px; }
+  .hours-day { color: var(--stone); }
+  .hours-time { color: var(--ink); }
+
+  footer { text-align: center; padding: 24px; font-size: 10px; color: var(--muted); letter-spacing: 0.08em; border-top: 1px solid var(--border); margin-top: 20px; }
+  footer a { color: var(--gold); text-decoration: none; }
+</style>
+
+<header>
+  <div class="h-emblem">🐍</div>
+  <div class="h-name">Medusa Osteria Romana</div>
+  <div class="h-sep"></div>
+  <div class="h-sub">Fortitude Valley · Brisbane</div>
+  <div class="h-live"><div class="live-dot"></div> Live Availability</div>
+</header>
+
+<main>
+  <!-- Quick facts -->
+  <div class="quick-facts">
+    <div class="qf"><div class="qf-label">Cuisine</div><div class="qf-val">Roman Italian</div></div>
+    <div class="qf"><div class="qf-label">Rating</div><div class="qf-val">4.7 ★ (312)</div></div>
+    <div class="qf"><div class="qf-label">Price</div><div class="qf-val">$$–$$$</div></div>
+    <div class="qf"><div class="qf-label">Phone</div><div class="qf-val">07 3193 0200</div></div>
+  </div>
+
+  <!-- Availability -->
+  <div class="avail-header">
+    <div class="section-eyebrow" style="margin:0;flex:1">Live Dining Availability</div>
+    <button class="refresh-btn" onclick="loadAvailability()">↻ Refresh</button>
+  </div>
+  <div style="font-size:10px;color:var(--muted);margin-bottom:12px;" id="last-updated"></div>
+
+  <div id="avail-loading" class="avail-loading">
+    <div class="avail-spinner"></div>
+    <div class="avail-loading-text">Fetching live availability…</div>
+  </div>
+  <div id="avail-content" style="display:none;"></div>
+
+  <!-- Book bar -->
+  <div class="book-bar">
+    <div class="book-bar-text">
+      <strong>Ready to book your table?</strong><br>
+      Walk-ins welcome · Fri &amp; Sat evenings recommended booking · Tables held 15 min
+    </div>
+    <a class="book-btn" href="https://mcp.getfork.ai/book/medusa-italian-osteria-romana" target="_blank">Book a Table</a>
+  </div>
+
+  <!-- Hours -->
+  <div style="margin-top:28px;">
+    <div class="section-eyebrow">Opening Hours</div>
+    <div class="hours-grid">
+      <div class="hours-row"><span class="hours-day">Mon – Thu</span><span class="hours-time">5:00 pm – 10:00 pm</span></div>
+      <div class="hours-row"><span class="hours-day">Friday</span><span class="hours-time">12:00 pm – 11:00 pm</span></div>
+      <div class="hours-row"><span class="hours-day">Saturday</span><span class="hours-time">12:00 pm – 11:00 pm</span></div>
+      <div class="hours-row"><span class="hours-day">Sunday</span><span class="hours-time">12:00 pm – 9:00 pm</span></div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  Medusa Osteria Romana · 14 Via Roma Lane, Fortitude Valley QLD 4006 · <a href="tel:+61731930200">07 3193 0200</a> · Availability powered by <a href="https://getfork.ai" target="_blank">GetFork Voice AI</a>
+</footer>
+
+<script>
+  const AVAILABILITY_URL = 'https://mcp.getfork.ai/api/availability/medusa-italian-osteria-romana.json';
+  const BOOK_URL = 'https://mcp.getfork.ai/book/medusa-italian-osteria-romana';
+
+  function fmtDate(dateStr) {
+    const d = new Date(dateStr + 'T00:00:00');
+    const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return `${days[d.getDay()]} ${d.getDate()} ${months[d.getMonth()]}`;
+  }
+
+  function fmtTime(t) {
+    const [h, m] = t.split(':').map(Number);
+    const ampm = h >= 12 ? 'pm' : 'am';
+    const hour = h % 12 || 12;
+    return `${hour}:${String(m).padStart(2,'0')} ${ampm}`;
+  }
+
+  function slotCls(pct, full) {
+    if (full) return 'slot slot-full';
+    if (pct >= 80) return 'slot slot-green';
+    if (pct >= 50) return 'slot slot-cool';
+    if (pct >= 25) return 'slot slot-warm';
+    return 'slot slot-hot';
+  }
+
+  function coverLabel(pct, covers, full) {
+    if (full) return 'Full';
+    if (covers !== undefined && covers !== null) return `${covers} spots`;
+    if (pct >= 80) return 'Plenty available';
+    if (pct >= 50) return 'Available';
+    if (pct >= 25) return 'Filling fast';
+    return 'Last few seats';
+  }
+
+  function renderAvailability(data) {
+    const container = document.getElementById('avail-content');
+
+    // Handle new API format: data.availability[] with slots[]
+    let dates = [];
+    if (data.availability && data.availability.length) {
+      dates = data.availability.map(day => {
+        // Group slots by shift name
+        const shiftMap = {};
+        (day.slots || []).forEach(slot => {
+          const shiftName = slot.shift || 'Available';
+          if (!shiftMap[shiftName]) shiftMap[shiftName] = [];
+          shiftMap[shiftName].push(slot);
+        });
+        const shifts = Object.entries(shiftMap).map(([name, slots]) => ({ name, slots }));
+        return { date: day.date, dayName: day.dayName, closed: day.status === 'closed', shifts };
+      });
+    } else if (data.dates && data.dates.length) {
+      dates = data.dates;
+    }
+
+    if (!dates.length) {
+      container.innerHTML = '<div style="padding:24px;text-align:center;color:var(--stone);font-size:12px;">No availability data.</div>';
+      container.style.display = 'block';
+      document.getElementById('avail-loading').style.display = 'none';
+      return;
+    }
+
+    let tabsHtml = '<div class="date-tabs">';
+    dates.forEach((d, i) => {
+      const cls = d.closed ? 'date-tab' : 'date-tab';
+      tabsHtml += `<button class="${cls}${i===0?' active':''}" onclick="switchTab(${i})">${fmtDate(d.date)}</button>`;
+    });
+    tabsHtml += '</div>';
+
+    let panelsHtml = '';
+    dates.forEach((d, i) => {
+      panelsHtml += `<div class="slot-panel${i===0?' active':''}" id="panel-${i}">`;
+      if (d.closed) {
+        panelsHtml += '<div style="padding:20px;color:var(--muted);font-size:12px;">Closed this day.</div>';
+      } else {
+        const shifts = d.shifts || [];
+        if (!shifts.length) {
+          panelsHtml += '<div style="padding:20px;color:var(--stone);font-size:12px;">No shifts available.</div>';
+        }
+        shifts.forEach(shift => {
+          panelsHtml += `<div class="shift-title">${shift.name}</div><div class="slots-grid">`;
+          (shift.slots || []).forEach(slot => {
+            const pct = slot.availablePct !== undefined ? slot.availablePct : 100;
+            const full = slot.full || pct === 0;
+            const cls = slotCls(pct, full);
+            const covers = slot.maxCovers && !full ? Math.round(slot.maxCovers * (pct === 100 ? 1 : pct / 100)) : undefined;
+            const label = coverLabel(pct, covers, full);
+            if (full) {
+              panelsHtml += `<div class="${cls}"><span class="slot-time">${fmtTime(slot.time)}</span><span class="slot-covers">${label}</span></div>`;
+            } else {
+              panelsHtml += `<a class="${cls}" href="${BOOK_URL}?time=${slot.time}&date=${d.date}" target="_blank" style="text-decoration:none;"><span class="slot-time">${fmtTime(slot.time)}</span><span class="slot-covers">${label}</span></a>`;
+            }
+          });
+          panelsHtml += '</div>';
+        });
+      }
+      panelsHtml += `<div class="legend">
+        <div class="legend-item"><span class="legend-dot ld-hot"></span>Last few seats</div>
+        <div class="legend-item"><span class="legend-dot ld-warm"></span>Filling fast</div>
+        <div class="legend-item"><span class="legend-dot ld-cool"></span>Available</div>
+        <div class="legend-item"><span class="legend-dot ld-avail"></span>Plenty of tables</div>
+        <div class="legend-item"><span class="legend-dot ld-full"></span>Full</div>
+      </div></div>`;
+    });
+
+    container.innerHTML = tabsHtml + panelsHtml;
+    container.style.display = 'block';
+    document.getElementById('avail-loading').style.display = 'none';
+
+    const ts = data.generatedAt || data.updatedAt;
+    document.getElementById('last-updated').textContent = ts ? `Updated ${new Date(ts).toLocaleTimeString()}` : `Updated ${new Date().toLocaleTimeString()}`;
+  }
+
+  function switchTab(idx) {
+    document.querySelectorAll('.date-tab').forEach((t,i) => t.classList.toggle('active', i===idx));
+    document.querySelectorAll('.slot-panel').forEach((p,i) => p.classList.toggle('active', i===idx));
+  }
+
+  async function loadAvailability() {
+    document.getElementById('avail-loading').style.display = 'block';
+    document.getElementById('avail-content').style.display = 'none';
+    document.getElementById('last-updated').textContent = '';
+
+    try {
+      const res = await fetch(AVAILABILITY_URL, { headers: { 'Accept': 'application/json' } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      renderAvailability(data);
+    } catch (err) {
+      console.warn('API error:', err);
+      document.getElementById('avail-loading').innerHTML = '<div style="padding:20px;color:var(--terra);font-size:12px;">Could not load live availability. Please try refreshing.</div>';
+    }
+  }
+
+  loadAvailability();
+  setInterval(loadAvailability, 60000);
+</script>
