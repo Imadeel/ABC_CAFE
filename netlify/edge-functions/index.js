@@ -27,10 +27,32 @@ export default async (request, context) => {
     const todayStr   = today.toISOString().slice(0, 10);
     const weekEndStr = weekEnd.toISOString().slice(0, 10);
 
-    const raw = json.dates ?? json.availability ?? [];
-    weekDates = raw.filter(d => d.date >= todayStr && d.date <= weekEndStr);
-    updatedAt = json.updatedAt ?? json.last_updated ?? new Date().toISOString();
+    const raw = json.availability ?? json.dates ?? [];
+    updatedAt = json.generatedAt ?? json.updatedAt ?? json.last_updated ?? new Date().toISOString();
 
+    // Normalise real API shape: flat slots[] with slot.shift -> nested shifts[]
+    const normalised = raw
+      .filter(d => d.date >= todayStr && d.date <= weekEndStr)
+      .map(d => {
+        const shiftMap = {};
+        for (const slot of (d.slots ?? [])) {
+          const sName = slot.shift ?? "Available";
+          if (!shiftMap[sName]) shiftMap[sName] = [];
+          shiftMap[sName].push({
+            time: slot.time,
+            maxCovers: slot.maxCovers ?? 10,
+            availablePct: slot.availablePct ?? 100
+          });
+        }
+        return {
+          date:    d.date,
+          dayName: d.dayName ?? "",
+          closed:  d.status === "closed" || (d.slots ?? []).length === 0,
+          shifts:  Object.entries(shiftMap).map(([name, slots]) => ({ name, slots }))
+        };
+      });
+
+    weekDates = normalised;
     if (!weekDates.length) throw new Error("empty");
   } catch (e) {
     // Graceful fallback — build realistic demo data
