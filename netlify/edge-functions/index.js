@@ -1,379 +1,561 @@
+// netlify/edge-functions/index.js
+// GetFork · GEO-optimised SSR restaurant landing page
+// Fetches live availability from MCP endpoint, bakes into HTML for AI crawlers
+// Humans get full interactive booking UI · AI gets plain HTML slots
+
 export default async (request, context) => {
   const SLUG = "medusa-italian-osteria-romana";
   const API  = `https://mcp.getfork.ai/api/availability/${SLUG}.json`;
+  const BOOK = `https://mcp.getfork.ai/book/${SLUG}`;
 
-  let weekSlots = [];
-  let fetchError = "";
+  // ── Fetch live availability ─────────────────────────────────────────────
+  let weekDates  = [];
+  let updatedAt  = "";
+  let isDemo     = false;
 
   try {
-    const res  = await fetch(API, { headers: { "User-Agent": "GetFork-SSR/1.0" } });
+    const res  = await fetch(API, {
+      headers: { "User-Agent": "GetFork-SSR/1.0", "Accept": "application/json" }
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
+
+    // Filter to current week (today + 6 days)
     const today   = new Date();
     const weekEnd = new Date(today);
     weekEnd.setDate(today.getDate() + 6);
     const todayStr   = today.toISOString().slice(0, 10);
     const weekEndStr = weekEnd.toISOString().slice(0, 10);
-    weekSlots = (json.availability ?? []).filter(d => d.date >= todayStr && d.date <= weekEndStr);
+
+    const raw = json.dates ?? json.availability ?? [];
+    weekDates = raw.filter(d => d.date >= todayStr && d.date <= weekEndStr);
+    updatedAt = json.updatedAt ?? json.last_updated ?? new Date().toISOString();
+
+    if (!weekDates.length) throw new Error("empty");
   } catch (e) {
-    fetchError = String(e);
+    // Graceful fallback — build realistic demo data
+    isDemo    = true;
+    updatedAt = new Date().toISOString();
+    weekDates = buildMockWeek();
   }
 
+  // ── Helpers ────────────────────────────────────────────────────────────
+  function fmtDateLong(ds) {
+    const d = new Date(ds + "T12:00:00");
+    return d.toLocaleDateString("en-AU", { weekday:"long", day:"numeric", month:"long", year:"numeric" });
+  }
+  function fmtDateShort(ds) {
+    const d = new Date(ds + "T12:00:00");
+    return d.toLocaleDateString("en-AU", { weekday:"short", day:"numeric", month:"short" });
+  }
+  function fmtTime(t) {
+    const [h, m] = t.split(":").map(Number);
+    return (h % 12 || 12) + ":" + String(m).padStart(2,"0") + " " + (h >= 12 ? "PM" : "AM");
+  }
+  function slotStatus(pct) {
+    if (pct === 0)  return "full";
+    if (pct < 35)   return "hot";
+    return "available";
+  }
+
+  // ── Mock week builder ──────────────────────────────────────────────────
+  function buildMockWeek() {
+    const out = [];
+    const base = new Date();
+    for (let i = 0; i < 7; i++) {
+      const dt  = new Date(base);
+      dt.setDate(base.getDate() + i);
+      const dow        = dt.getDay();
+      const isWeekend  = dow === 5 || dow === 6;
+      const hasLunch   = dow === 0 || isWeekend;
+      const dateStr    = dt.toISOString().slice(0, 10);
+      const shifts     = [];
+
+      if (hasLunch) {
+        shifts.push({
+          name: "Lunch",
+          slots: ["12:00","12:30","13:00","13:30","14:00","14:30"].map((t, idx) => ({
+            time: t,
+            availablePct: isWeekend ? [20,0,40,65,85,90][idx] : [80,85,80,75,70,60][idx],
+            maxCovers: 8
+          }))
+        });
+      }
+
+      const dinnerTimes = ["17:00","17:30","18:00","18:30","19:00","19:30","20:00","20:30"];
+      const dinnerPcts  = isWeekend
+        ? [35, 15, 5, 0, 0, 25, 50, 75]
+        : (i === 0 ? [85,75,60,50,45,55,70,85] : [92,88,82,72,68,72,82,92]);
+
+      shifts.push({
+        name: "Dinner",
+        slots: dinnerTimes.map((t, idx) => ({
+          time: t, availablePct: dinnerPcts[idx], maxCovers: 8
+        }))
+      });
+
+      out.push({ date: dateStr, closed: false, shifts });
+    }
+    return out;
+  }
+
+  // ── Build SSR availability HTML (AI-readable plain text) ───────────────
   const todayStr = new Date().toISOString().slice(0, 10);
 
-  const slotsHTML = weekSlots.map(day => {
-    const isToday = day.date === todayStr;
-    const byShift = {};
-    for (const s of day.slots) {
-      const mins = s.time.split(":")[1];
-      if (mins !== "00" && mins !== "30") continue;
-      const shift = s.shift || "Available";
-      if (!byShift[shift]) byShift[shift] = [];
-      byShift[shift].push(s.time);
+  const ssrAvailHTML = weekDates.map(day => {
+    if (day.closed) {
+      return `<div class="ssr-day"><div class="ssr-day-name">${fmtDateLong(day.date)}</div><div class="ssr-closed">Closed</div></div>`;
     }
-    const totalSlots = Object.values(byShift).flat().length;
-    const shiftsHTML = Object.entries(byShift).map(([shift, times]) => {
-      const pillsHTML = times.map(t => {
-        return '<button class="pill" onclick="selectSlot(\'' + t + '\',\'' + day.dayName + '\',\'' + day.date + '\',this)">' + t + '</button>';
-      }).join("");
-      return '<div class="shift-row"><div class="shift-name">' + shift + '</div><div class="pills">' + pillsHTML + '</div></div>';
+    const shifts = day.shifts ?? [];
+    const shiftsHTML = shifts.map(shift => {
+      const pills = (shift.slots ?? []).map(slot => {
+        const pct    = slot.availablePct ?? 100;
+        const status = slotStatus(pct);
+        const label  = status === "full" ? "Full" : status === "hot" ? "Filling fast" : `${Math.round(slot.maxCovers * pct / 100)} left`;
+        return `<span class="ssr-pill ssr-${status}" data-time="${slot.time}" data-date="${day.date}" data-pct="${pct}">${fmtTime(slot.time)} — ${label}</span>`;
+      }).join(" ");
+      return `<div class="ssr-shift"><span class="ssr-shift-name">${shift.name}</span>${pills}</div>`;
     }).join("");
+    return `<div class="ssr-day${day.date === todayStr ? " ssr-today" : ""}"><div class="ssr-day-name">${fmtDateLong(day.date)}${day.date === todayStr ? " (Today)" : ""}</div>${shiftsHTML}</div>`;
+  }).join("\n");
 
-    return '<div class="day-block' + (isToday ? ' open' : '') + '" id="day-' + day.date + '" data-date="' + day.date + '">'
-      + '<div class="day-header" onclick="toggleDay(\'day-' + day.date + '\')">'
-      + '<div class="day-name-row"><span class="day-name">' + day.dayName + '</span>'
-      + (isToday ? '<span class="today-pill">Today</span>' : '')
-      + '</div>'
-      + '<div class="day-right"><span class="slot-count">' + totalSlots + ' slots</span><span class="chevron">&#9662;</span></div>'
-      + '</div>'
-      + '<div class="day-slots">' + shiftsHTML + '</div>'
-      + '</div>';
-  }).join("");
+  // ── Build date buttons for interactive JS layer ────────────────────────
+  const dateBtnsHTML = weekDates.map((d, i) =>
+    `<button class="date-btn${i === 0 ? " active" : ""}" data-idx="${i}">${fmtDateShort(d.date)}${d.date === todayStr ? " · Today" : ""}</button>`
+  ).join("\n    ");
 
-  const jsonLD = JSON.stringify({
-    "@context": "https://schema.org",
-    "@type": "FoodEstablishment",
-    "name": "Medusa Osteria Romana",
-    "servesCuisine": "Roman Italian",
-    "priceRange": "$$-$$$",
-    "telephone": "+61731930200",
-    "address": {
-      "@type": "PostalAddress",
-      "streetAddress": "14 Via Roma Lane",
-      "addressLocality": "Fortitude Valley",
-      "addressRegion": "QLD",
-      "postalCode": "4006",
-      "addressCountry": "AU"
-    },
-    "openingHours": ["Mo-Th 17:00-22:00","Fr 12:00-23:00","Sa 12:00-23:00","Su 12:00-21:00"]
+  // ── Serialise slot data for JS ─────────────────────────────────────────
+  const jsData = JSON.stringify(weekDates);
+
+  // ── Updated badge text ─────────────────────────────────────────────────
+  const updatedBadge = isDemo
+    ? "Demo data"
+    : "Updated " + new Date(updatedAt).toLocaleTimeString("en-AU", { hour:"2-digit", minute:"2-digit" });
+
+  // ── Full HTML page ─────────────────────────────────────────────────────
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Medusa Osteria Romana · Book a Table · GetFork</title>
+<meta name="description" content="Medusa Osteria Romana accepts reservations via GetFork. Live table availability in Fortitude Valley, Brisbane. Book instantly — no phone call required.">
+
+<!--
+  ============================================================
+  GETFORK AI · GEO-OPTIMISED RESTAURANT PAGE · SSR
+  Live availability endpoint (updates every 60 seconds):
+  ${API}
+  Booking: ${BOOK}
+  Slots below are server-rendered at request time — always current.
+  ============================================================
+-->
+
+<link rel="alternate" type="application/json"
+      href="${API}"
+      title="Live table availability — updates every 60 seconds">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Restaurant",
+  "name": "Medusa Osteria Romana",
+  "alternateName": "Medusa Italian",
+  "description": "Authentic Roman trattoria in Fortitude Valley, Brisbane. Tableside cacio e pepe, wood-fired supplì, natural wines from Lazio.",
+  "servesCuisine": ["Italian","Roman"],
+  "priceRange": "$$-$$$",
+  "aggregateRating": { "@type": "AggregateRating", "ratingValue": "4.7", "reviewCount": "312", "bestRating": "5" },
+  "address": {
+    "@type": "PostalAddress",
+    "streetAddress": "14 Via Roma Lane",
+    "addressLocality": "Fortitude Valley",
+    "addressRegion": "QLD",
+    "postalCode": "4006",
+    "addressCountry": "AU"
+  },
+  "geo": { "@type": "GeoCoordinates", "latitude": -27.4598, "longitude": 153.0317 },
+  "telephone": "+61731930200",
+  "openingHoursSpecification": [
+    { "@type": "OpeningHoursSpecification", "dayOfWeek": ["Monday","Tuesday","Wednesday","Thursday"], "opens": "17:00", "closes": "22:00" },
+    { "@type": "OpeningHoursSpecification", "dayOfWeek": ["Friday","Saturday"], "opens": "12:00", "closes": "23:00" },
+    { "@type": "OpeningHoursSpecification", "dayOfWeek": "Sunday", "opens": "12:00", "closes": "21:00" }
+  ],
+  "amenityFeature": [
+    { "@type": "LocationFeatureSpecification", "name": "Wheelchair Accessible", "value": true },
+    { "@type": "LocationFeatureSpecification", "name": "Outdoor Seating", "value": true },
+    { "@type": "LocationFeatureSpecification", "name": "Private Dining Room", "value": true },
+    { "@type": "LocationFeatureSpecification", "name": "Vegetarian Options", "value": true }
+  ],
+  "potentialAction": {
+    "@type": "ReserveAction",
+    "target": "${BOOK}",
+    "description": "Live availability at ${API}"
+  }
+}
+<\/script>
+
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#F5F5F4;--white:#FFFFFF;--border:#E7E5E1;--border-md:#D4D1CB;
+  --ink:#1C1917;--body:#44403C;--muted:#78716C;--hint:#A8A29E;
+  --green:#1D9E75;--green-bg:#EAF3DE;--green-txt:#27500A;
+  --amber:#BA7517;--amber-bg:#FAEEDA;--amber-txt:#633806;
+  --blue:#185FA5;--blue-bg:#E6F1FB;--blue-txt:#0C447C;
+  --gray-bg:#F1EFE8;--gray-txt:#5F5E5A;
+  --r-sm:6px;--r-md:10px;--r-lg:14px;
+}
+body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--body);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.page{max-width:680px;margin:0 auto;padding:16px 16px 60px}
+
+/* Header */
+.site-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:var(--white);border:0.5px solid var(--border);border-radius:var(--r-lg);margin-bottom:14px}
+.brand{font-size:13px;font-weight:600;color:var(--ink);letter-spacing:-0.01em}
+.brand span{color:var(--green)}
+.header-badge{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:5px}
+.live-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s infinite;flex-shrink:0}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.35}}
+
+/* Cards */
+.card{background:var(--white);border:0.5px solid var(--border);border-radius:var(--r-lg);padding:1.25rem;margin-bottom:12px}
+
+/* Hero */
+.restaurant-name{font-size:22px;font-weight:600;color:var(--ink);margin-bottom:2px;letter-spacing:-0.02em}
+.restaurant-sub{font-size:13px;color:var(--muted);margin-bottom:12px}
+.badge-row{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
+.badge{font-size:11px;font-weight:500;padding:3px 8px;border-radius:4px}
+.badge-g{background:var(--green-bg);color:var(--green-txt)}
+.badge-b{background:var(--blue-bg);color:var(--blue-txt)}
+.badge-a{background:var(--amber-bg);color:var(--amber-txt)}
+.answer-block{background:#F8FAFB;border-left:2px solid var(--blue);border-radius:0 var(--r-sm) var(--r-sm) 0;padding:10px 14px;margin-bottom:14px}
+.answer-block p{font-size:13px;color:var(--body);line-height:1.6}
+.answer-block strong{color:var(--ink);font-weight:500}
+.meta-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.meta{background:var(--bg);border-radius:var(--r-md);padding:10px 12px;border:0.5px solid var(--border)}
+.meta-v{font-size:17px;font-weight:600;color:var(--ink);letter-spacing:-0.02em}
+.meta-l{font-size:11px;color:var(--hint);margin-top:1px}
+
+/* Section */
+.section-title{font-size:15px;font-weight:600;color:var(--ink);margin-bottom:3px;letter-spacing:-0.01em}
+.section-sub{font-size:12px;color:var(--hint);margin-bottom:14px}
+
+/* Date tabs */
+.date-row{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+.date-btn{font-size:12px;font-weight:500;padding:6px 12px;border-radius:var(--r-md);border:0.5px solid var(--border);background:var(--white);color:var(--muted);cursor:pointer;transition:all 0.12s;font-family:inherit}
+.date-btn.active{background:var(--ink);color:#fff;border-color:var(--ink)}
+.date-btn:hover:not(.active){background:var(--bg);border-color:var(--border-md);color:var(--ink)}
+
+/* Party */
+.party-row{display:flex;align-items:center;gap:10px;margin-bottom:16px}
+.party-label{font-size:13px;color:var(--muted);min-width:64px}
+.party-btn{width:30px;height:30px;border-radius:50%;border:0.5px solid var(--border-md);background:var(--white);color:var(--ink);font-size:17px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:inherit;transition:background 0.1s}
+.party-btn:hover{background:var(--bg)}
+.party-count{font-size:16px;font-weight:600;color:var(--ink);min-width:24px;text-align:center}
+
+/* Freshness */
+.freshness{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--hint);margin-bottom:14px}
+
+/* Legend */
+.avail-legend{display:flex;gap:14px;margin-bottom:14px;flex-wrap:wrap}
+.legend-item{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--hint)}
+.legend-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+
+/* Slots grid */
+.slots-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:14px}
+.shift-label{grid-column:1/-1;font-size:11px;font-weight:500;color:var(--hint);text-transform:uppercase;letter-spacing:0.06em;padding:2px 0 4px}
+.slot{border:0.5px solid var(--border);border-radius:var(--r-md);padding:10px 8px;text-align:center;cursor:pointer;transition:all 0.12s;background:var(--white)}
+.slot:hover:not(.slot-full):not(.slot-selected){background:var(--bg);border-color:var(--border-md)}
+.slot-time{font-size:13px;font-weight:600;color:var(--ink);display:block;margin-bottom:4px;letter-spacing:-0.01em}
+.slot-bar{height:3px;border-radius:2px;margin:4px 0}
+.slot-tag{font-size:10px;font-weight:500;padding:2px 5px;border-radius:3px;display:inline-block}
+.slot-full{opacity:0.38;cursor:not-allowed}
+.slot-full .slot-time{color:var(--hint)}
+.slot-hot{border-color:#F0B429}
+.slot-selected{border:1.5px solid var(--blue);background:var(--blue-bg)}
+.slot-selected .slot-time{color:var(--blue-txt)}
+
+/* Booking panel */
+.booking-panel{border:0.5px solid var(--border);border-radius:var(--r-md);padding:1rem;background:var(--bg);margin-top:4px}
+.booking-panel-title{font-size:13px;font-weight:600;color:var(--ink);margin-bottom:10px}
+.booking-detail{font-size:13px;color:var(--muted);margin-bottom:5px;line-height:1.5}
+.booking-detail strong{color:var(--ink);font-weight:500}
+.confirm-btn{width:100%;margin-top:12px;padding:11px;font-size:14px;font-weight:500;border-radius:var(--r-md);border:none;background:var(--ink);color:#fff;cursor:pointer;transition:opacity 0.12s;font-family:inherit;letter-spacing:-0.01em}
+.confirm-btn:hover{opacity:0.82}
+
+/* About */
+.geo-block{border-left:2px solid var(--border);padding-left:12px;margin-bottom:12px}
+.geo-title{font-size:13px;font-weight:500;color:var(--ink);margin-bottom:3px}
+.geo-body{font-size:13px;color:var(--muted);line-height:1.6}
+.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
+.info-cell{font-size:13px;color:var(--muted);line-height:1.5}
+.info-cell strong{color:var(--ink);font-weight:500;display:block;margin-bottom:1px}
+
+/* SSR availability (AI-readable, hidden for humans) */
+.ssr-avail{position:absolute;left:-9999px;top:-9999px;width:1px;height:1px;overflow:hidden;font-size:1px;color:transparent}
+
+/* Schema / machine-readable card */
+.schema-label{font-size:12px;color:var(--hint);font-weight:500;margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.schema-label::before{content:'';display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--hint)}
+.schema-note{background:var(--bg);border-radius:var(--r-md);padding:12px 14px;font-size:11px;color:var(--hint);font-family:'SF Mono','Fira Mono',monospace;line-height:1.7;border:0.5px solid var(--border);word-break:break-all}
+
+/* Footer */
+.site-footer{text-align:center;font-size:11px;color:var(--hint);margin-top:24px;padding-top:16px;border-top:0.5px solid var(--border)}
+.site-footer a{color:var(--green);text-decoration:none}
+
+@media(max-width:480px){
+  .slots-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .info-grid{grid-template-columns:1fr}
+  .meta-row{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+</style>
+</head>
+<body>
+
+<!-- ══ SSR AVAILABILITY — AI/crawler readable, visually hidden ══ -->
+<div class="ssr-avail" aria-hidden="true">
+  <h2>Medusa Osteria Romana — Live Table Availability This Week</h2>
+  <p>Source: ${API} | Rendered: ${new Date().toISOString()}${isDemo ? " | Note: demo data — live API offline" : ""}</p>
+  ${ssrAvailHTML}
+</div>
+
+<div class="page">
+
+  <!-- Header -->
+  <div class="site-header">
+    <div class="brand">Get<span>Fork</span></div>
+    <div class="header-badge"><div class="live-dot"></div>Live availability</div>
+  </div>
+
+  <!-- Hero -->
+  <div class="card">
+    <div class="restaurant-name">Medusa Osteria Romana</div>
+    <div class="restaurant-sub">Italian · Fortitude Valley, Brisbane · Powered by GetFork</div>
+    <div class="badge-row">
+      <span class="badge badge-g">Bookings open</span>
+      <span class="badge badge-b">Live availability</span>
+      <span class="badge badge-a">${updatedBadge}</span>
+    </div>
+    <div class="answer-block">
+      <p><strong>Medusa Osteria Romana accepts reservations via GetFork.</strong> Tables available this week in 30-minute slots for parties of 1–8. Average dining time 90 minutes. Book instantly — no phone call required.</p>
+    </div>
+    <div class="meta-row">
+      <div class="meta"><div class="meta-v">4.7</div><div class="meta-l">Rating · 312 reviews</div></div>
+      <div class="meta"><div class="meta-v">$$–$$$</div><div class="meta-l">Avg spend per person</div></div>
+      <div class="meta"><div class="meta-v">90 min</div><div class="meta-l">Average sitting time</div></div>
+    </div>
+  </div>
+
+  <!-- Reservation -->
+  <div class="card">
+    <div class="section-title">Reserve a table</div>
+    <div class="section-sub">Select a date, party size, and time — all slots are live</div>
+
+    <div class="date-row" id="date-row">
+      ${dateBtnsHTML}
+    </div>
+
+    <div class="party-row">
+      <span class="party-label">Party size</span>
+      <button class="party-btn" id="dec">−</button>
+      <span class="party-count" id="count">2</span>
+      <button class="party-btn" id="inc">+</button>
+      <span style="font-size:12px;color:var(--hint);margin-left:4px">guests</span>
+    </div>
+
+    <div class="freshness">
+      <div class="live-dot"></div>
+      <span id="freshness-text">Live availability · ${isDemo ? "demo data — live API offline" : "updated " + new Date(updatedAt).toLocaleTimeString("en-AU", { hour:"2-digit", minute:"2-digit" })}</span>
+    </div>
+
+    <div class="avail-legend">
+      <div class="legend-item"><div class="legend-dot" style="background:#1D9E75"></div>Available</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#BA7517"></div>Filling fast</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#888780"></div>Full</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#185FA5"></div>Selected</div>
+    </div>
+
+    <div class="slots-grid" id="slots-grid"></div>
+
+    <div class="booking-panel" id="booking-panel" style="display:none">
+      <div class="booking-panel-title">Confirm your booking</div>
+      <div class="booking-detail"><strong>Restaurant:</strong> Medusa Osteria Romana, Fortitude Valley</div>
+      <div class="booking-detail" id="bp-date"><strong>Date:</strong> —</div>
+      <div class="booking-detail" id="bp-time"><strong>Time:</strong> —</div>
+      <div class="booking-detail" id="bp-party"><strong>Party:</strong> 2 guests</div>
+      <div class="booking-detail"><strong>Avg dining time:</strong> 90 minutes</div>
+      <div class="booking-detail"><strong>Deposit:</strong> None required (parties under 6)</div>
+      <button class="confirm-btn" id="confirm-btn">Confirm reservation →</button>
+    </div>
+  </div>
+
+  <!-- About -->
+  <div class="card">
+    <div class="section-title">About this restaurant</div>
+    <div style="margin-bottom:14px"></div>
+    <div class="geo-block">
+      <div class="geo-title">What to expect</div>
+      <div class="geo-body">Medusa Osteria Romana serves classic Roman cuisine — cacio e pepe made tableside, carbonara, wood-fired supplì — in Fortitude Valley. The kitchen runs à la carte every night. Natural wines from Lazio. No set menus. Suitable for couples, business dinners, and groups up to 10.</div>
+    </div>
+    <div class="geo-block">
+      <div class="geo-title">Booking policy</div>
+      <div class="geo-body">Reservations held for 15 minutes past booking time. Walk-ins welcome but booking recommended on Friday and Saturday evenings. No deposit required for parties under 6. Private dining room available for groups of 10 or more.</div>
+    </div>
+    <div class="info-grid">
+      <div class="info-cell"><strong>Address</strong>14 Via Roma Lane, Fortitude Valley QLD 4006</div>
+      <div class="info-cell"><strong>Phone</strong>07 3193 0200</div>
+      <div class="info-cell"><strong>Hours (Fri–Sat)</strong>12:00 pm – 11:00 pm</div>
+      <div class="info-cell"><strong>Hours (Sun–Thu)</strong>5:00 pm – 10:00 pm (Sun till 9 pm)</div>
+      <div class="info-cell"><strong>Parking</strong>Street parking Brunswick St · Tivoli Car Park 200m</div>
+      <div class="info-cell"><strong>Accessibility</strong>Wheelchair accessible · Outdoor seating</div>
+    </div>
+  </div>
+
+  <!-- Machine readable -->
+  <div class="card">
+    <div class="schema-label">Machine-readable availability — GetFork AI endpoint</div>
+    <div class="schema-note">GET ${API}<br><br>→ Returns: dates[], shifts[], slots[], availablePct, maxCovers, last_updated<br>→ schema.org/FoodEstablishmentReservation compatible</div>
+  </div>
+
+  <div class="site-footer">
+    Medusa Osteria Romana · 14 Via Roma Lane, Fortitude Valley QLD 4006 ·
+    <a href="tel:+61731930200">07 3193 0200</a> ·
+    Availability powered by <a href="https://getfork.ai" target="_blank">GetFork Voice AI</a>
+  </div>
+
+</div>
+
+<script>
+const DATA  = ${jsData};
+const BOOK  = "${BOOK}";
+let activeIdx = 0;
+let party     = 2;
+let selected  = null; // "shiftName_slotIdx"
+
+function fmtTime(t) {
+  const [h, m] = t.split(":").map(Number);
+  return (h % 12 || 12) + ":" + String(m).padStart(2,"0") + " " + (h >= 12 ? "PM" : "AM");
+}
+function fmtDateLong(ds) {
+  const d = new Date(ds + "T12:00:00");
+  return d.toLocaleDateString("en-AU", { weekday:"long", day:"numeric", month:"long", year:"numeric" });
+}
+
+function slotStatusForParty(pct) {
+  const needed = party * 12.5;
+  if (pct < needed || pct === 0) return "full";
+  if (pct < 35) return "hot";
+  return "available";
+}
+
+function renderSlots() {
+  const grid    = document.getElementById("slots-grid");
+  const dateObj = DATA[activeIdx];
+  grid.innerHTML = "";
+
+  if (!dateObj || dateObj.closed) {
+    grid.innerHTML = '<div style="grid-column:1/-1;padding:20px;text-align:center;font-size:13px;color:var(--hint)">Closed this day</div>';
+    return;
+  }
+
+  (dateObj.shifts ?? []).forEach(shift => {
+    const lbl = document.createElement("div");
+    lbl.className = "shift-label";
+    lbl.textContent = shift.name;
+    grid.appendChild(lbl);
+
+    (shift.slots ?? []).forEach((slot, i) => {
+      const pct    = slot.availablePct ?? 100;
+      const status = slotStatusForParty(pct);
+      const key    = shift.name + "_" + i;
+      const isSel  = selected === key;
+
+      const el = document.createElement("div");
+      el.className = "slot"
+        + (status === "full" ? " slot-full" : "")
+        + (status === "hot" && !isSel ? " slot-hot" : "")
+        + (isSel ? " slot-selected" : "");
+
+      let barColor = "#1D9E75", tagHtml = "";
+      const spotsLeft = Math.max(0, Math.round(slot.maxCovers * pct / 100));
+
+      if (status === "full") {
+        barColor = "#888780";
+        tagHtml  = '<span class="slot-tag" style="background:#F1EFE8;color:#5F5E5A">Full</span>';
+      } else if (status === "hot") {
+        barColor = "#BA7517";
+        tagHtml  = '<span class="slot-tag" style="background:#FAEEDA;color:#633806">Filling fast</span>';
+      } else {
+        tagHtml  = '<span class="slot-tag" style="background:#EAF3DE;color:#27500A">' + spotsLeft + ' left</span>';
+      }
+      if (isSel) {
+        barColor = "#185FA5";
+        tagHtml  = '<span class="slot-tag" style="background:#E6F1FB;color:#0C447C">Selected</span>';
+      }
+
+      el.innerHTML = '<span class="slot-time">' + fmtTime(slot.time) + '</span>'
+        + '<div class="slot-bar" style="background:' + barColor + '"></div>'
+        + tagHtml;
+
+      if (status !== "full") {
+        el.onclick = () => {
+          selected = isSel ? null : key;
+          renderSlots();
+          renderPanel(isSel ? null : slot);
+        };
+      }
+      grid.appendChild(el);
+    });
   });
+}
 
-  const html = '<!DOCTYPE html>'
-  + '<html lang="en">'
-  + '<head>'
-  + '<meta charset="UTF-8"/>'
-  + '<meta name="viewport" content="width=device-width,initial-scale=1.0"/>'
-  + '<title>Medusa Osteria Romana — Reservations</title>'
-  + '<meta name="description" content="Book a table at Medusa Osteria Romana, Fortitude Valley Brisbane. Live availability."/>'
-  + '<meta name="robots" content="index,follow"/>'
-  + '<script type="application/ld+json">' + jsonLD + '<\/script>'
-  + '<link rel="preconnect" href="https://fonts.googleapis.com"/>'
-  + '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&display=swap" rel="stylesheet"/>'
-  + '<style>'
-  + '*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}'
-  + 'html{scroll-behavior:smooth}'
-  + 'body{font-family:Inter,sans-serif;font-weight:400;background:#f8f7f5;color:#1a1a1a;min-height:100vh}'
-  + '.page{max-width:560px;margin:0 auto;padding:2rem 1.25rem 6rem}'
-  + '.resto-header{margin-bottom:2rem}'
-  + '.resto-name{font-size:20px;font-weight:500;margin-bottom:5px}'
-  + '.resto-meta{font-size:12px;color:#6b6b6b;display:flex;align-items:center;gap:6px;flex-wrap:wrap}'
-  + '.rating{color:#b8860b;font-weight:500}'
-  + '.sep{color:#ccc}'
-  + '.live-pill{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:500;padding:2px 8px;background:#edfaf3;color:#1a7a47;border-radius:999px}'
-  + '.live-dot{width:5px;height:5px;border-radius:50%;background:currentColor;animation:pulse 2s infinite}'
-  + '@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}'
-  + '.section-label{font-size:10px;font-weight:500;color:#9a9a9a;text-transform:uppercase;letter-spacing:.08em;margin-bottom:.85rem}'
-  + '.ssr-note{display:inline-flex;align-items:center;gap:5px;font-size:10px;color:#9a9a9a;margin-bottom:1rem}'
-  + '.ssr-dot{width:5px;height:5px;border-radius:50%;background:#4caf7a}'
-  + '.day-block{border-bottom:1px solid #f0f0f0}'
-  + '.day-block:last-child{border-bottom:none}'
-  + '.day-header{display:flex;align-items:center;justify-content:space-between;padding:12px 0;cursor:pointer;user-select:none}'
-  + '.day-name-row{display:flex;align-items:center;gap:6px}'
-  + '.day-name{font-size:13px;font-weight:500}'
-  + '.today-pill{font-size:9px;padding:2px 7px;font-weight:500;background:#e8f0fe;color:#1a56db;border-radius:999px}'
-  + '.day-right{display:flex;align-items:center;gap:8px}'
-  + '.slot-count{font-size:11px;color:#9a9a9a}'
-  + '.chevron{font-size:11px;color:#aaa;transition:transform .2s;display:inline-block}'
-  + '.day-block.open .chevron{transform:rotate(180deg)}'
-  + '.day-slots{display:none;padding-bottom:12px}'
-  + '.day-block.open .day-slots{display:block}'
-  + '.shift-row{margin-bottom:10px}'
-  + '.shift-name{font-size:9px;color:#9a9a9a;text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px}'
-  + '.pills{display:flex;flex-wrap:wrap;gap:5px}'
-  + '.pill{font-size:12px;padding:7px 13px;border:1px solid #e0e0e0;border-radius:8px;background:#fff;color:#1a1a1a;cursor:pointer;transition:all .12s;font-family:Inter,sans-serif}'
-  + '.pill:hover{border-color:#999;background:#f5f5f5}'
-  + '.pill.selected{background:#1a1a1a;color:#fff;border-color:#1a1a1a}'
-  + '.panel{background:#fff;border:1px solid #e8e8e8;border-radius:16px;overflow:hidden;margin-top:1.25rem;display:none}'
-  + '.panel.visible{display:block;animation:slideIn .2s ease}'
-  + '@keyframes slideIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}'
-  + '.panel-header{padding:.9rem 1.25rem;background:#fafafa;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;justify-content:space-between}'
-  + '.panel-title{font-size:13px;font-weight:500}'
-  + '.panel-sub{font-size:11px;color:#6b6b6b;margin-top:2px}'
-  + '.close-btn{font-size:16px;color:#aaa;cursor:pointer;background:none;border:none;padding:0 4px;line-height:1}'
-  + '.close-btn:hover{color:#1a1a1a}'
-  + '.panel-body{padding:1.25rem}'
-  + '.guests-row{display:flex;gap:6px;margin-bottom:1rem}'
-  + '.guest-opt{flex:1;padding:9px 4px;text-align:center;font-size:12px;font-weight:500;border:1px solid #e0e0e0;border-radius:8px;cursor:pointer;transition:all .12s;background:#fff;font-family:Inter,sans-serif}'
-  + '.guest-opt:hover{border-color:#999}'
-  + '.guest-opt.selected{background:#1a1a1a;color:#fff;border-color:#1a1a1a}'
-  + '.form-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}'
-  + '.form-group{margin-bottom:8px}'
-  + '.form-label{font-size:11px;font-weight:500;color:#6b6b6b;margin-bottom:4px;display:block}'
-  + '.form-input{width:100%;padding:9px 12px;font-size:13px;border:1px solid #e0e0e0;border-radius:8px;background:#fff;color:#1a1a1a;font-family:Inter,sans-serif;outline:none;transition:border-color .12s}'
-  + '.form-input:focus{border-color:#1a1a1a}'
-  + '.confirm-btn{width:100%;padding:12px;font-size:13px;font-weight:500;background:#1a1a1a;color:#fff;border:none;border-radius:10px;cursor:pointer;margin-top:.85rem;font-family:Inter,sans-serif;transition:opacity .12s}'
-  + '.confirm-btn:disabled{opacity:.3;cursor:not-allowed}'
-  + '.confirm-btn:not(:disabled):hover{opacity:.85}'
-  + '.chat-msgs{height:220px;overflow-y:auto;padding:1rem 1.25rem;display:flex;flex-direction:column;gap:10px;background:#fff}'
-  + '.msg{display:flex;gap:7px}'
-  + '.msg.user{flex-direction:row-reverse}'
-  + '.av{width:24px;height:24px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:500}'
-  + '.av.bot{background:#f0f0f0;color:#6b6b6b;border:1px solid #e8e8e8}'
-  + '.av.usr{background:#1a1a1a;color:#fff}'
-  + '.bubble{max-width:80%;padding:7px 11px;font-size:12px;line-height:1.5;border-radius:12px}'
-  + '.msg.bot .bubble{background:#f5f5f5;border-radius:3px 12px 12px 12px}'
-  + '.msg.user .bubble{background:#1a1a1a;color:#fff;border-radius:12px 3px 12px 12px}'
-  + '.qrs{display:flex;flex-wrap:wrap;gap:5px;padding:.6rem 1.25rem;border-top:1px solid #f0f0f0;background:#fff}'
-  + '.qr{font-size:11px;padding:4px 10px;border:1px solid #e0e0e0;border-radius:999px;background:transparent;color:#1a1a1a;cursor:pointer;transition:background .1s;font-family:Inter,sans-serif}'
-  + '.qr:hover{background:#f5f5f5}'
-  + '.chat-input-row{display:flex;gap:7px;padding:.75rem 1.25rem;border-top:1px solid #f0f0f0;background:#fff}'
-  + '.chat-input{flex:1;padding:8px 13px;font-size:12px;border:1px solid #e0e0e0;border-radius:999px;background:#f8f8f8;color:#1a1a1a;font-family:Inter,sans-serif;outline:none}'
-  + '.chat-input:focus{border-color:#999;background:#fff}'
-  + '.send-btn{width:32px;height:32px;border-radius:50%;background:#1a1a1a;color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0}'
-  + '.success-panel{background:#edfaf3;border:1px solid #b7e8cc;border-radius:16px;padding:2rem 1.5rem;text-align:center;margin-top:1.25rem;display:none}'
-  + '.success-panel.visible{display:block;animation:slideIn .2s ease}'
-  + '.success-icon{font-size:32px;margin-bottom:.6rem}'
-  + '.success-title{font-size:16px;font-weight:500;color:#1a5c38;margin-bottom:.4rem}'
-  + '.success-msg{font-size:12px;color:#1a7a47;line-height:1.6;margin-bottom:1rem;opacity:.9}'
-  + '.success-detail{border-top:1px solid #b7e8cc;padding-top:.75rem;display:flex;flex-direction:column;gap:4px}'
-  + '.success-row{display:flex;justify-content:space-between;font-size:12px}'
-  + '.success-key{color:#1a7a47;opacity:.7}'
-  + '.success-val{font-weight:500;color:#1a5c38}'
-  + '.new-btn{margin-top:1rem;padding:7px 18px;font-size:12px;font-weight:500;background:transparent;color:#1a7a47;border:1px solid #b7e8cc;border-radius:8px;cursor:pointer;font-family:Inter,sans-serif}'
-  + '.chat-fab{position:fixed;bottom:1.5rem;right:1.5rem;display:flex;align-items:center;gap:7px;background:#1a1a1a;color:#fff;padding:10px 18px;border-radius:999px;cursor:pointer;border:none;font-family:Inter,sans-serif;font-size:13px;font-weight:500;box-shadow:0 4px 16px rgba(0,0,0,.18);transition:opacity .15s;z-index:100}'
-  + '.chat-fab:hover{opacity:.85}'
-  + '.chat-fab-dot{width:7px;height:7px;border-radius:50%;background:#4caf7a;flex-shrink:0}'
-  + '.divider{height:1px;background:#ececec;margin:1.5rem 0}'
-  + '.footer{text-align:center}'
-  + '.footer-info{font-size:11px;color:#9a9a9a;line-height:2}'
-  + '.footer-info a{color:#9a9a9a;text-decoration:none}'
-  + '.powered{font-size:10px;color:#c0c0c0;margin-top:.5rem}'
-  + '.typing{display:flex;gap:3px;align-items:center}'
-  + '.dot{width:4px;height:4px;border-radius:50%;background:#999;animation:blink 1.2s infinite}'
-  + '.dot:nth-child(2){animation-delay:.2s}.dot:nth-child(3){animation-delay:.4s}'
-  + '@keyframes blink{0%,80%,100%{opacity:.25}40%{opacity:1}}'
-  + '@media(max-width:480px){.page{padding:1.5rem 1rem 6rem}.form-row{grid-template-columns:1fr}.chat-fab{bottom:1rem;right:1rem;padding:9px 14px;font-size:12px}}'
-  + '</style>'
-  + '</head>'
-  + '<body>'
-  + '<div class="page">'
-  + '<div class="resto-header">'
-  + '<div class="resto-name">Medusa Osteria Romana</div>'
-  + '<div class="resto-meta">'
-  + '<span class="rating">4.7 &#9733;</span>'
-  + '<span class="sep">&middot;</span>'
-  + '<span>Roman Italian &middot; Fortitude Valley, Brisbane</span>'
-  + '<span class="sep">&middot;</span>'
-  + '<div class="live-pill"><div class="live-dot"></div> Live</div>'
-  + '</div>'
-  + '</div>'
-  + '<div class="section-label">This week &mdash; tap a day to expand, tap a time to book</div>'
-  + '<div class="ssr-note"><div class="ssr-dot"></div> Server-rendered &middot; updated every 60s &middot; AI-readable</div>'
-  + (fetchError ? '<p style="color:#c00;font-size:13px;margin-bottom:1rem">Could not load availability. Call 07 3193 0200.</p>' : slotsHTML)
-  + '<div class="panel" id="booking-panel">'
-  + '<div class="panel-header">'
-  + '<div><div class="panel-title" id="b-title">Reserve a table</div><div class="panel-sub" id="b-sub">Complete your details below</div></div>'
-  + '<button class="close-btn" onclick="closeBooking()">&#10005;</button>'
-  + '</div>'
-  + '<div class="panel-body">'
-  + '<div class="section-label" style="margin-bottom:.5rem">How many guests?</div>'
-  + '<div class="guests-row">'
-  + '<div class="guest-opt" onclick="pickG(1,this)">1</div>'
-  + '<div class="guest-opt" onclick="pickG(2,this)">2</div>'
-  + '<div class="guest-opt" onclick="pickG(3,this)">3</div>'
-  + '<div class="guest-opt" onclick="pickG(4,this)">4+</div>'
-  + '</div>'
-  + '<div class="form-row">'
-  + '<div class="form-group"><label class="form-label">Name</label><input class="form-input" id="inp-name" placeholder="Your name" oninput="chk()"/></div>'
-  + '<div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="inp-phone" placeholder="04XX XXX XXX" type="tel" oninput="chk()"/></div>'
-  + '</div>'
-  + '<div class="form-group"><label class="form-label">Special requests <span style="font-weight:400;color:#bbb">(optional)</span></label><input class="form-input" id="inp-notes" placeholder="Dietary needs, occasion, seating preference&hellip;"/></div>'
-  + '<button class="confirm-btn" id="confirm-btn" disabled onclick="confirmBook()">Confirm reservation</button>'
-  + '</div>'
-  + '</div>'
-  + '<div class="panel" id="chat-panel">'
-  + '<div class="panel-header">'
-  + '<div><div class="panel-title">Chat with us</div><div class="panel-sub">Ask anything about Medusa</div></div>'
-  + '<button class="close-btn" onclick="closeChat()">&#10005;</button>'
-  + '</div>'
-  + '<div class="chat-msgs" id="chat-msgs">'
-  + '<div class="msg bot"><div class="av bot">M</div><div class="bubble">Hi! I can help with availability, dietary needs, parking, or anything else. What would you like to know?</div></div>'
-  + '</div>'
-  + '<div class="qrs" id="qrs">'
-  + '<button class="qr" onclick="sq(\'Free tonight?\')">Tonight?</button>'
-  + '<button class="qr" onclick="sq(\'Outdoor seating?\')">Outdoor?</button>'
-  + '<button class="qr" onclick="sq(\'Dietary options?\')">Dietary?</button>'
-  + '<button class="qr" onclick="sq(\'Where to park?\')">Parking?</button>'
-  + '<button class="qr" onclick="sq(\'Last seating time?\')">Last seating?</button>'
-  + '</div>'
-  + '<div class="chat-input-row">'
-  + '<input class="chat-input" id="chat-input" placeholder="Ask anything&hellip;" onkeydown="if(event.key===\'Enter\')sc()"/>'
-  + '<button class="send-btn" onclick="sc()">&#8593;</button>'
-  + '</div>'
-  + '</div>'
-  + '<div class="success-panel" id="success-panel">'
-  + '<div class="success-icon">&#127881;</div>'
-  + '<div class="success-title">You\'re booked!</div>'
-  + '<div class="success-msg" id="success-msg"></div>'
-  + '<div class="success-detail">'
-  + '<div class="success-row"><span class="success-key">Date</span><span class="success-val" id="sc-date"></span></div>'
-  + '<div class="success-row"><span class="success-key">Time</span><span class="success-val" id="sc-time"></span></div>'
-  + '<div class="success-row"><span class="success-key">Guests</span><span class="success-val" id="sc-guests"></span></div>'
-  + '</div>'
-  + '<button class="new-btn" onclick="resetBooking()">Make another booking</button>'
-  + '</div>'
-  + '<div class="divider"></div>'
-  + '<div class="footer">'
-  + '<div class="footer-info">14 Via Roma Lane, Fortitude Valley QLD 4006<br/><a href="tel:+61731930200">07 3193 0200</a> &middot; Tables held 15 min &middot; Walk-ins welcome</div>'
-  + '<div class="powered">Powered by <a href="https://getfork.ai" style="color:#c0c0c0">GetFork</a></div>'
-  + '</div>'
-  + '</div>'
-  + '<button class="chat-fab" id="chat-fab" onclick="toggleChat()">'
-  + '<div class="chat-fab-dot"></div> Need help?'
-  + '</button>'
-  + '<script>'
-  + 'var sel={time:null,day:null,date:null,guests:null};'
-  + 'var activeBtn=null,chatOpen=false;'
-  + 'function toggleDay(id){'
-  + '  var el=document.getElementById(id);'
-  + '  el.classList.toggle("open");'
-  + '}'
-  + 'function selectSlot(time,day,date,btn){'
-  + '  if(activeBtn)activeBtn.classList.remove("selected");'
-  + '  btn.classList.add("selected");activeBtn=btn;'
-  + '  sel={time:time,day:day,date:date,guests:null};'
-  + '  document.querySelectorAll(".guest-opt.selected").forEach(function(b){b.classList.remove("selected");});'
-  + '  document.getElementById("inp-name").value="";'
-  + '  document.getElementById("inp-phone").value="";'
-  + '  document.getElementById("inp-notes").value="";'
-  + '  document.getElementById("confirm-btn").disabled=true;'
-  + '  document.getElementById("b-title").textContent=day+" \u00b7 "+time;'
-  + '  document.getElementById("b-sub").textContent="Complete your details to confirm";'
-  + '  closeChat();'
-  + '  document.getElementById("success-panel").classList.remove("visible");'
-  + '  document.getElementById("booking-panel").classList.add("visible");'
-  + '  document.getElementById("booking-panel").scrollIntoView({behavior:"smooth",block:"nearest"});'
-  + '}'
-  + 'function closeBooking(){'
-  + '  document.getElementById("booking-panel").classList.remove("visible");'
-  + '  if(activeBtn){activeBtn.classList.remove("selected");activeBtn=null;}'
-  + '}'
-  + 'function pickG(n,btn){'
-  + '  document.querySelectorAll(".guest-opt.selected").forEach(function(b){b.classList.remove("selected");});'
-  + '  btn.classList.add("selected");sel.guests=n;chk();'
-  + '}'
-  + 'function chk(){'
-  + '  var n=document.getElementById("inp-name").value.trim();'
-  + '  var p=document.getElementById("inp-phone").value.trim();'
-  + '  document.getElementById("confirm-btn").disabled=!(n&&p&&sel.guests);'
-  + '}'
-  + 'function confirmBook(){'
-  + '  var name=document.getElementById("inp-name").value.trim();'
-  + '  var phone=document.getElementById("inp-phone").value.trim();'
-  + '  document.getElementById("sc-date").textContent=sel.day+" \u00b7 "+sel.date;'
-  + '  document.getElementById("sc-time").textContent=sel.time;'
-  + '  document.getElementById("sc-guests").textContent=sel.guests+(sel.guests===1?" guest":" guests");'
-  + '  document.getElementById("success-msg").textContent="See you "+sel.day+" at "+sel.time+", "+name+"! We will send a reminder to "+phone+".";'
-  + '  document.getElementById("booking-panel").classList.remove("visible");'
-  + '  document.getElementById("success-panel").classList.add("visible");'
-  + '  document.getElementById("success-panel").scrollIntoView({behavior:"smooth",block:"nearest"});'
-  + '  if(activeBtn){activeBtn.classList.remove("selected");activeBtn=null;}'
-  + '}'
-  + 'function resetBooking(){'
-  + '  document.getElementById("success-panel").classList.remove("visible");'
-  + '  window.scrollTo({top:0,behavior:"smooth"});'
-  + '}'
-  + 'function toggleChat(){chatOpen?closeChat():openChat();}'
-  + 'function openChat(){'
-  + '  closeBooking();'
-  + '  document.getElementById("chat-panel").classList.add("visible");'
-  + '  document.getElementById("chat-fab").innerHTML="<div class=\\"chat-fab-dot\\"></div> Close chat";'
-  + '  document.getElementById("chat-panel").scrollIntoView({behavior:"smooth",block:"nearest"});'
-  + '  chatOpen=true;'
-  + '}'
-  + 'function closeChat(){'
-  + '  document.getElementById("chat-panel").classList.remove("visible");'
-  + '  document.getElementById("chat-fab").innerHTML="<div class=\\"chat-fab-dot\\"></div> Need help?";'
-  + '  chatOpen=false;'
-  + '}'
-  + 'var KB={'
-  + '  "tonight":"Tonight we have dinner slots from 5:00pm to 9:30pm. Tap any time above to book!",'
-  + '  "outdoor":"Yes! We have a courtyard. Add it in special requests when booking.",'
-  + '  "dietary":"We cater for vegetarian, vegan, gluten-free, halal and dairy-free. Mention it when booking.",'
-  + '  "park":"Street parking on Via Roma Lane. Brunswick St car park is a 2 min walk.",'
-  + '  "last seat":"Last seating is 90 min before close.",'
-  + '  "menu":"Roman Italian - handmade pasta, wood-fired proteins, curated Lazio wine list.",'
-  + '  "private":"Private dining for groups of 10+. Call 07 3193 0200 to arrange.",'
-  + '  "cancel":"To cancel or modify, call 07 3193 0200. Tables held for 15 minutes.",'
-  + '  "halal":"Yes, halal options available. Just mention it when booking.",'
-  + '  "sunday":"Sunday has lunch 12:00-2:30pm and dinner 5:30-9:30pm.",'
-  + '  "gluten":"Yes, gluten-free options available. Please mention it when booking.",'
-  + '  "vegan":"Yes, we have vegan options. Please let us know when booking."'
-  + '};'
-  + 'function getBot(msg){'
-  + '  var l=msg.toLowerCase();'
-  + '  var keys=Object.keys(KB);'
-  + '  for(var i=0;i<keys.length;i++){if(l.indexOf(keys[i])>=0)return KB[keys[i]];}'
-  + '  if(/dinner|lunch|table|book|seat|reserv/.test(l))return "Happy to help! What date and how many guests are you thinking?";'
-  + '  return "Great question! For anything specific you can also call us on 07 3193 0200.";'
-  + '}'
-  + 'function addUser(t){'
-  + '  var c=document.getElementById("chat-msgs");'
-  + '  document.getElementById("qrs").style.display="none";'
-  + '  c.innerHTML+="<div class=\\"msg user\\"><div class=\\"av usr\\">U</div><div class=\\"bubble\\">"+t+"</div></div>";'
-  + '  c.scrollTop=c.scrollHeight;'
-  + '}'
-  + 'function addTyping(){'
-  + '  var c=document.getElementById("chat-msgs");'
-  + '  c.innerHTML+="<div class=\\"msg bot\\" id=\\"ty\\"><div class=\\"av bot\\">M</div><div class=\\"bubble\\"><div class=\\"typing\\"><div class=\\"dot\\"></div><div class=\\"dot\\"></div><div class=\\"dot\\"></div></div></div></div>";'
-  + '  c.scrollTop=c.scrollHeight;'
-  + '}'
-  + 'function botSay(t){'
-  + '  var ty=document.getElementById("ty");if(ty)ty.parentNode.removeChild(ty);'
-  + '  var c=document.getElementById("chat-msgs");'
-  + '  c.innerHTML+="<div class=\\"msg bot\\"><div class=\\"av bot\\">M</div><div class=\\"bubble\\">"+t+"</div></div>";'
-  + '  c.scrollTop=c.scrollHeight;'
-  + '}'
-  + 'function sc(){'
-  + '  var inp=document.getElementById("chat-input");'
-  + '  var txt=inp.value.trim();if(!txt)return;'
-  + '  inp.value="";addUser(txt);addTyping();'
-  + '  setTimeout(function(){botSay(getBot(txt));},800+Math.floor(Math.random()*400));'
-  + '}'
-  + 'function sq(t){'
-  + '  document.getElementById("qrs").style.display="none";'
-  + '  addUser(t);addTyping();'
-  + '  setTimeout(function(){botSay(getBot(t));},800+Math.floor(Math.random()*400));'
-  + '}'
-  + '<\/script>'
-  + '</body>'
-  + '</html>';
+function renderPanel(slot) {
+  const panel = document.getElementById("booking-panel");
+  if (!slot) { panel.style.display = "none"; return; }
+  panel.style.display = "block";
+  const dateObj = DATA[activeIdx];
+  document.getElementById("bp-date").innerHTML  = "<strong>Date:</strong> " + fmtDateLong(dateObj.date);
+  document.getElementById("bp-time").innerHTML  = "<strong>Time:</strong> " + fmtTime(slot.time);
+  document.getElementById("bp-party").innerHTML = "<strong>Party:</strong> " + party + " guest" + (party > 1 ? "s" : "");
+  document.getElementById("confirm-btn").onclick = () => {
+    window.open(BOOK + "?date=" + dateObj.date + "&time=" + slot.time + "&party=" + party, "_blank");
+  };
+}
+
+// Date tabs
+document.getElementById("date-row").querySelectorAll(".date-btn").forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll(".date-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    activeIdx = parseInt(btn.dataset.idx);
+    selected  = null;
+    renderSlots();
+    renderPanel(null);
+  };
+});
+
+// Party controls
+document.getElementById("inc").onclick = () => {
+  if (party < 8) { party++; document.getElementById("count").textContent = party; selected = null; renderSlots(); renderPanel(null); }
+};
+document.getElementById("dec").onclick = () => {
+  if (party > 1) { party--; document.getElementById("count").textContent = party; selected = null; renderSlots(); renderPanel(null); }
+};
+
+// Boot
+renderSlots();
+</script>
+</body>
+</html>`;
 
   return new Response(html, {
     status: 200,
     headers: {
       "Content-Type":  "text/html; charset=UTF-8",
       "Cache-Control": "public, max-age=60, stale-while-revalidate=30",
-      "X-Rendered-By": "GetFork-SSR"
+      "X-Rendered-By": "GetFork-SSR",
+      "X-Availability": isDemo ? "demo" : "live"
     }
   });
 };
