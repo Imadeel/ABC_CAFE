@@ -1,12 +1,17 @@
 // netlify/edge-functions/index.js
-// GetFork · Pure SSR GEO-optimised restaurant page
-// Zero client-side JavaScript — everything rendered server-side
-// AI crawlers, LLMs, and humans all see identical fully-rendered HTML
+// GetFork · Pure SSR · Zero client JavaScript
+// Date filter via URL query param ?date=YYYY-MM-DD
+// Tabs are plain <a href="?date=..."> links — no JS needed
 
 export default async (request, context) => {
   const SLUG = "medusa-italian-osteria-romana";
   const API  = `https://mcp.getfork.ai/api/availability/${SLUG}.json`;
   const BOOK = `https://mcp.getfork.ai/book/${SLUG}`;
+
+  // ── Read selected date from URL query param ────────────────────────────
+  const url         = new URL(request.url);
+  const todayStr    = new Date().toISOString().slice(0, 10);
+  const selectedDate = url.searchParams.get("date") ?? todayStr;
 
   // ── Fetch & normalise live availability ────────────────────────────────
   let weekDates = [];
@@ -23,7 +28,6 @@ export default async (request, context) => {
     const today   = new Date();
     const weekEnd = new Date(today);
     weekEnd.setDate(today.getDate() + 6);
-    const todayStr   = today.toISOString().slice(0, 10);
     const weekEndStr = weekEnd.toISOString().slice(0, 10);
 
     updatedAt = json.generatedAt ?? json.updatedAt ?? new Date().toISOString();
@@ -33,6 +37,7 @@ export default async (request, context) => {
     weekDates = raw
       .filter(d => d.date >= todayStr && d.date <= weekEndStr)
       .map(d => {
+        // Group flat slots[] by shift name → nested shifts[]
         const shiftMap = {};
         for (const slot of (d.slots ?? [])) {
           const sName = slot.shift ?? "Available";
@@ -64,16 +69,15 @@ export default async (request, context) => {
       weekday: "long", day: "numeric", month: "long", year: "numeric"
     });
   }
-  function fmtDateShort(ds) {
+  function fmtDateTab(ds) {
     const d = new Date(ds + "T12:00:00");
-    return d.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" });
+    const day  = d.toLocaleDateString("en-AU", { weekday: "short" });
+    const date = d.toLocaleDateString("en-AU", { day: "numeric", month: "short" });
+    return { day, date };
   }
   function fmtTime(t) {
     const [h, m] = t.split(":").map(Number);
     return (h % 12 || 12) + ":" + String(m).padStart(2, "0") + " " + (h >= 12 ? "PM" : "AM");
-  }
-  function todayStr() {
-    return new Date().toISOString().slice(0, 10);
   }
 
   // ── Mock fallback ──────────────────────────────────────────────────────
@@ -107,11 +111,16 @@ export default async (request, context) => {
     return out;
   }
 
-  // ── SSR slot grid for one day ──────────────────────────────────────────
-  function renderDaySlots(day) {
-    if (day.closed) {
-      return `<p class="closed-msg">Closed — no availability this day</p>`;
-    }
+  // ── Selected day ───────────────────────────────────────────────────────
+  // If selectedDate not in results, fall back to first available day
+  const activeDay = weekDates.find(d => d.date === selectedDate) ?? weekDates[0];
+
+  // ── SSR: render slot grid ──────────────────────────────────────────────
+  function renderSlots(day) {
+    if (!day) return `<p class="empty-msg">No availability data.</p>`;
+    if (day.closed) return `<div class="closed-msg">Closed — no availability this day</div>`;
+    if (!day.shifts.length) return `<p class="empty-msg">No slots available for this day.</p>`;
+
     return day.shifts.map(shift => `
       <div class="shift-block">
         <div class="shift-label">${shift.name}</div>
@@ -119,32 +128,40 @@ export default async (request, context) => {
           ${shift.slots.map(slot => `
             <a class="slot"
                href="${BOOK}?date=${day.date}&time=${slot.time}&party=2"
-               aria-label="Book ${fmtTime(slot.time)} on ${fmtDateLong(day.date)}">
+               aria-label="Book ${fmtTime(slot.time)} ${shift.name} on ${fmtDateLong(day.date)}">
               <span class="slot-time">${fmtTime(slot.time)}</span>
               <div class="slot-bar"></div>
-              <span class="slot-tag">${slot.maxCovers} seats</span>
+              <span class="slot-tag">${slot.maxCovers ? slot.maxCovers + " seats" : "Available"}</span>
             </a>`).join("")}
         </div>
       </div>`).join("");
   }
 
-  const today        = todayStr();
-  const updatedText  = isDemo
-    ? "Demo data — live API offline"
+  // ── SSR: date tab strip ────────────────────────────────────────────────
+  const tabsHTML = weekDates.map(d => {
+    const isActive = d.date === (activeDay?.date ?? "");
+    const isClosed = d.closed;
+    const { day, date } = fmtDateTab(d.date);
+    const isToday  = d.date === todayStr;
+    return `
+      <a class="date-tab${isActive ? " active" : ""}${isClosed ? " tab-closed" : ""}"
+         href="?date=${d.date}"
+         aria-label="${fmtDateLong(d.date)}${isClosed ? " — closed" : ""}">
+        <span class="tab-day">${isToday ? "Today" : day}</span>
+        <span class="tab-date">${date}</span>
+        ${isClosed ? `<span class="tab-pill closed">Closed</span>` : `<span class="tab-pill open">${d.shifts.reduce((n, s) => n + s.slots.length, 0)} slots</span>`}
+      </a>`;
+  }).join("\n");
+
+  const updatedText = isDemo
+    ? "Demo data"
     : "Updated " + new Date(updatedAt).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" });
 
-  const allDaysHTML = weekDates.map(day => `
-    <div class="day-section${day.date === today ? " day-today" : ""}${day.closed ? " day-closed" : ""}">
-      <div class="day-header">
-        <span class="day-name">${fmtDateLong(day.date)}${day.date === today ? " — Today" : ""}</span>
-        ${day.closed
-          ? `<span class="day-badge closed">Closed</span>`
-          : `<span class="day-badge open">Available</span>`}
-      </div>
-      ${renderDaySlots(day)}
-    </div>`).join("\n");
+  const activeDateLabel = activeDay
+    ? fmtDateLong(activeDay.date) + (activeDay.date === todayStr ? " — Today" : "")
+    : "Select a date";
 
-  // ── HTML page ──────────────────────────────────────────────────────────
+  // ── HTML ───────────────────────────────────────────────────────────────
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -156,11 +173,10 @@ export default async (request, context) => {
 <!--
   ============================================================
   GETFORK AI · PURE SSR · ZERO CLIENT JAVASCRIPT
-  Live availability endpoint (updates every 60 seconds):
-  ${API}
+  Date filter via URL query param: ?date=YYYY-MM-DD
+  Live availability: ${API}
   Booking: ${BOOK}
-  All slots on this page are server-rendered at request time.
-  LLMs and crawlers see the exact same HTML as humans.
+  All slots server-rendered at request time.
   ============================================================
 -->
 
@@ -193,12 +209,6 @@ export default async (request, context) => {
     { "@type": "OpeningHoursSpecification", "dayOfWeek": ["Friday","Saturday"], "opens": "12:00", "closes": "23:00" },
     { "@type": "OpeningHoursSpecification", "dayOfWeek": "Sunday", "opens": "12:00", "closes": "21:00" }
   ],
-  "amenityFeature": [
-    { "@type": "LocationFeatureSpecification", "name": "Wheelchair Accessible", "value": true },
-    { "@type": "LocationFeatureSpecification", "name": "Outdoor Seating", "value": true },
-    { "@type": "LocationFeatureSpecification", "name": "Private Dining Room", "value": true },
-    { "@type": "LocationFeatureSpecification", "name": "Vegetarian Options", "value": true }
-  ],
   "potentialAction": {
     "@type": "ReserveAction",
     "target": "${BOOK}",
@@ -221,16 +231,19 @@ export default async (request, context) => {
 }
 body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--body);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
 a{color:inherit;text-decoration:none}
-.page{max-width:680px;margin:0 auto;padding:16px 16px 60px}
+.page{max-width:700px;margin:0 auto;padding:16px 16px 60px}
 
-.site-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:var(--white);border:0.5px solid var(--border);border-radius:var(--r-lg);margin-bottom:14px}
+/* Header */
+.site-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:var(--white);border:0.5px solid var(--border);border-radius:var(--r-lg);margin-bottom:12px}
 .brand{font-size:13px;font-weight:600;color:var(--ink)}
 .brand span{color:var(--green)}
 .header-right{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted)}
 .live-dot{width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block;flex-shrink:0}
 
+/* Cards */
 .card{background:var(--white);border:0.5px solid var(--border);border-radius:var(--r-lg);padding:1.25rem;margin-bottom:12px}
 
+/* Hero */
 .restaurant-name{font-size:22px;font-weight:600;color:var(--ink);margin-bottom:2px;letter-spacing:-0.02em}
 .restaurant-sub{font-size:13px;color:var(--muted);margin-bottom:12px}
 .badge-row{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
@@ -246,34 +259,59 @@ a{color:inherit;text-decoration:none}
 .meta-v{font-size:17px;font-weight:600;color:var(--ink);letter-spacing:-0.02em}
 .meta-l{font-size:11px;color:var(--hint);margin-top:1px}
 
+/* Section */
 .section-title{font-size:15px;font-weight:600;color:var(--ink);margin-bottom:3px;letter-spacing:-0.01em}
-.section-sub{font-size:12px;color:var(--hint);margin-bottom:16px}
-.freshness{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--hint);margin-bottom:18px}
+.section-sub{font-size:12px;color:var(--hint);margin-bottom:14px}
+.freshness{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--hint);margin-bottom:16px}
 
-.day-section{margin-bottom:22px;padding-bottom:22px;border-bottom:0.5px solid var(--border)}
-.day-section:last-child{border-bottom:none;margin-bottom:0;padding-bottom:0}
-.day-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
-.day-name{font-size:13px;font-weight:600;color:var(--ink)}
-.day-today .day-name{color:var(--blue)}
-.day-badge{font-size:11px;font-weight:500;padding:2px 8px;border-radius:4px}
-.day-badge.open{background:var(--green-bg);color:var(--green-txt)}
-.day-badge.closed{background:#F1EFE8;color:#5F5E5A}
-.closed-msg{font-size:13px;color:var(--hint);padding:8px 0}
+/* ── DATE TABS ── pure <a> links, no JS */
+.date-tabs{display:flex;gap:6px;overflow-x:auto;margin-bottom:20px;padding-bottom:2px;scrollbar-width:none}
+.date-tabs::-webkit-scrollbar{display:none}
+.date-tab{
+  display:flex;flex-direction:column;align-items:center;gap:3px;
+  padding:10px 14px;border-radius:var(--r-md);
+  border:0.5px solid var(--border);background:var(--white);
+  cursor:pointer;flex-shrink:0;min-width:72px;
+  transition:border-color 0.12s,background 0.12s;
+}
+.date-tab:hover:not(.active):not(.tab-closed){background:var(--bg);border-color:var(--border-md)}
+.date-tab.active{background:var(--ink);border-color:var(--ink)}
+.date-tab.tab-closed{opacity:0.45}
+.tab-day{font-size:11px;font-weight:500;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em}
+.tab-date{font-size:14px;font-weight:600;color:var(--ink);letter-spacing:-0.01em}
+.tab-pill{font-size:10px;font-weight:500;padding:2px 6px;border-radius:3px;margin-top:2px}
+.tab-pill.open{background:var(--green-bg);color:var(--green-txt)}
+.tab-pill.closed{background:#F1EFE8;color:#5F5E5A}
 
-.shift-block{margin-bottom:14px}
+/* Active tab overrides */
+.date-tab.active .tab-day{color:rgba(255,255,255,0.6)}
+.date-tab.active .tab-date{color:#fff}
+.date-tab.active .tab-pill.open{background:rgba(255,255,255,0.15);color:rgba(255,255,255,0.9)}
+
+/* Active day header */
+.active-day-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.active-day-name{font-size:14px;font-weight:600;color:var(--ink)}
+.active-day-badge{font-size:11px;font-weight:500;padding:3px 9px;border-radius:4px;background:var(--green-bg);color:var(--green-txt)}
+.active-day-badge.closed{background:#F1EFE8;color:#5F5E5A}
+
+/* Shifts + slots */
+.shift-block{margin-bottom:18px}
 .shift-block:last-child{margin-bottom:0}
-.shift-label{font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:0.08em;color:var(--hint);margin-bottom:8px}
-
+.shift-label{font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:0.08em;color:var(--hint);margin-bottom:10px}
 .slots-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
 .slot{display:block;border:0.5px solid var(--border);border-radius:var(--r-md);padding:10px 8px;text-align:center;background:var(--white)}
 .slot:hover{background:var(--green-bg);border-color:var(--green)}
 .slot-time{font-size:13px;font-weight:600;color:var(--ink);display:block;margin-bottom:4px;letter-spacing:-0.01em}
 .slot-bar{height:3px;border-radius:2px;background:var(--green);margin:4px 0}
 .slot-tag{font-size:10px;font-weight:500;padding:2px 5px;border-radius:3px;display:inline-block;background:var(--green-bg);color:var(--green-txt)}
+.closed-msg{font-size:13px;color:var(--hint);padding:20px 0;text-align:center}
+.empty-msg{font-size:13px;color:var(--hint);padding:12px 0}
 
+/* Book CTA */
 .book-cta{display:block;width:100%;padding:12px;text-align:center;background:var(--ink);color:#fff;font-size:14px;font-weight:500;border-radius:var(--r-md);margin-top:18px;letter-spacing:-0.01em}
 .book-cta:hover{opacity:0.85}
 
+/* About */
 .geo-block{border-left:2px solid var(--border);padding-left:12px;margin-bottom:12px}
 .geo-title{font-size:13px;font-weight:500;color:var(--ink);margin-bottom:3px}
 .geo-body{font-size:13px;color:var(--muted);line-height:1.6}
@@ -281,21 +319,25 @@ a{color:inherit;text-decoration:none}
 .info-cell{font-size:13px;color:var(--muted);line-height:1.5}
 .info-cell strong{color:var(--ink);font-weight:500;display:block;margin-bottom:1px}
 
+/* Machine readable */
 .schema-label{font-size:12px;color:var(--hint);font-weight:500;margin-bottom:6px}
 .schema-note{background:var(--bg);border-radius:var(--r-md);padding:12px 14px;font-size:11px;color:var(--hint);font-family:'SF Mono','Fira Mono',monospace;line-height:1.7;border:0.5px solid var(--border);word-break:break-all}
 
+/* Footer */
 .site-footer{text-align:center;font-size:11px;color:var(--hint);margin-top:24px;padding-top:16px;border-top:0.5px solid var(--border)}
 .site-footer a{color:var(--green)}
 
-@media(max-width:480px){
+@media(max-width:520px){
   .slots-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
   .info-grid{grid-template-columns:1fr}
+  .date-tab{min-width:62px;padding:8px 10px}
 }
 </style>
 </head>
 <body>
 <div class="page">
 
+  <!-- Header -->
   <div class="site-header">
     <div class="brand">Get<span>Fork</span></div>
     <div class="header-right">
@@ -304,6 +346,7 @@ a{color:inherit;text-decoration:none}
     </div>
   </div>
 
+  <!-- Hero -->
   <div class="card">
     <div class="restaurant-name">Medusa Osteria Romana</div>
     <div class="restaurant-sub">Italian · Fortitude Valley, Brisbane · Powered by GetFork</div>
@@ -322,17 +365,38 @@ a{color:inherit;text-decoration:none}
     </div>
   </div>
 
+  <!-- Availability with date filter -->
   <div class="card">
-    <div class="section-title">Live table availability — this week</div>
-    <div class="section-sub">All slots server-rendered · click any time to book instantly · no JavaScript required</div>
+    <div class="section-title">Live table availability</div>
+    <div class="section-sub">Select a date — all slots server-rendered · click any time to book</div>
+
     <div class="freshness">
       <span class="live-dot"></span>
       ${isDemo ? "Demo data — live API offline" : `Fetched live from GetFork MCP · ${updatedText}`}
     </div>
-    ${allDaysHTML}
-    <a class="book-cta" href="${BOOK}">View all availability &amp; book a table →</a>
+
+    <!-- Date tab strip — plain <a> links, zero JS -->
+    <div class="date-tabs" role="tablist">
+      ${tabsHTML}
+    </div>
+
+    <!-- Active day header -->
+    <div class="active-day-header">
+      <span class="active-day-name">${activeDateLabel}</span>
+      ${activeDay && !activeDay.closed
+        ? `<span class="active-day-badge">${activeDay.shifts.reduce((n,s) => n + s.slots.length, 0)} slots available</span>`
+        : `<span class="active-day-badge closed">Closed</span>`}
+    </div>
+
+    <!-- Slots for selected day — SSR -->
+    ${renderSlots(activeDay)}
+
+    <a class="book-cta" href="${BOOK}?date=${activeDay?.date ?? ""}&party=2">
+      Book a table for ${activeDateLabel} →
+    </a>
   </div>
 
+  <!-- About -->
   <div class="card">
     <div class="section-title">About this restaurant</div>
     <div style="margin-bottom:14px"></div>
@@ -354,9 +418,10 @@ a{color:inherit;text-decoration:none}
     </div>
   </div>
 
+  <!-- Machine readable -->
   <div class="card">
     <div class="schema-label">Machine-readable availability — GetFork AI endpoint</div>
-    <div class="schema-note">GET ${API}<br><br>→ availability[], slots[], shift, maxCovers, generatedAt, ttl:60<br>→ schema.org/FoodEstablishmentReservation compatible<br>→ Page re-renders on every request — slots always current</div>
+    <div class="schema-note">GET ${API}<br><br>→ availability[], slots[], shift, maxCovers, generatedAt, ttl:60<br>→ Date filter: ${url.origin}/?date=YYYY-MM-DD<br>→ schema.org/FoodEstablishmentReservation compatible</div>
   </div>
 
   <div class="site-footer">
@@ -375,7 +440,8 @@ a{color:inherit;text-decoration:none}
       "Content-Type":  "text/html; charset=UTF-8",
       "Cache-Control": "public, max-age=60, stale-while-revalidate=30",
       "X-Rendered-By": "GetFork-SSR",
-      "X-JS":          "none"
+      "X-Selected-Date": selectedDate,
+      "X-JS": "none"
     }
   });
 };
